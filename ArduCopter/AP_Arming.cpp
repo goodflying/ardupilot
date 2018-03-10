@@ -242,12 +242,14 @@ bool AP_Arming_Copter::parameter_checks(bool display_failure)
         }
 
         // check adsb avoidance failsafe
+#if ADSB_ENABLED == ENABLE
         if (copter.failsafe.adsb) {
             if (display_failure) {
                 gcs().send_text(MAV_SEVERITY_CRITICAL,"PreArm: ADSB threat detected");
             }
             return false;
         }
+#endif
 
         // check for something close to vehicle
         if (!pre_arm_proximity_check(display_failure)) {
@@ -266,10 +268,10 @@ bool AP_Arming_Copter::parameter_checks(bool display_failure)
             parameter_checks_pid_warning_message(display_failure, "PSC_VELZ_P");
             return false;
         } else if (is_zero(copter.pos_control->get_accel_z_pid().kP())) {
-            parameter_checks_pid_warning_message(display_failure, "PSC_ACCELZ_P");
+            parameter_checks_pid_warning_message(display_failure, "PSC_ACCZ_P");
             return false;
         } else if (is_zero(copter.pos_control->get_accel_z_pid().kI())) {
-            parameter_checks_pid_warning_message(display_failure, "PSC_ACCELZ_I");
+            parameter_checks_pid_warning_message(display_failure, "PSC_ACCZ_I");
             return false;
         } else if (is_zero(copter.attitude_control->get_rate_roll_pid().kP()) && is_zero(copter.attitude_control->get_rate_roll_pid().ff())) {
             parameter_checks_pid_warning_message(display_failure, "ATC_RAT_RLL_P");
@@ -559,6 +561,7 @@ bool AP_Arming_Copter::arm_checks(bool display_failure, bool arming_from_gcs)
         return false;
     }
 
+#ifndef ALLOW_ARM_NO_COMPASS
     // check compass health
     if (!_compass.healthy()) {
         if (display_failure) {
@@ -566,6 +569,7 @@ bool AP_Arming_Copter::arm_checks(bool display_failure, bool arming_from_gcs)
         }
         return false;
     }
+#endif
 
     if (_compass.is_calibrating()) {
         if (display_failure) {
@@ -630,6 +634,7 @@ bool AP_Arming_Copter::arm_checks(bool display_failure, bool arming_from_gcs)
     }
 
     // check adsb
+#if ADSB_ENABLED == ENABLE
     if ((checks_to_perform == ARMING_CHECK_ALL) || (checks_to_perform & ARMING_CHECK_PARAMETERS)) {
         if (copter.failsafe.adsb) {
             if (display_failure) {
@@ -638,6 +643,7 @@ bool AP_Arming_Copter::arm_checks(bool display_failure, bool arming_from_gcs)
             return false;
         }
     }
+#endif
 
     // check throttle
     if ((checks_to_perform == ARMING_CHECK_ALL) || (checks_to_perform & ARMING_CHECK_RC)) {
