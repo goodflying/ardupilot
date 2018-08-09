@@ -2,7 +2,6 @@
 // Simple test for the AP_AHRS interface
 //
 
-#include <AP_ADC/AP_ADC.h>
 #include <AP_AHRS/AP_AHRS.h>
 #include <AP_HAL/AP_HAL.h>
 #include <AP_BoardConfig/AP_BoardConfig.h>
@@ -28,14 +27,14 @@ public:
     RangeFinder sonar{serial_manager, ROTATION_PITCH_270};
     NavEKF2 EKF2{&ahrs, sonar};
     NavEKF3 EKF3{&ahrs, sonar};
-    AP_AHRS_NavEKF ahrs{ins, EKF2, EKF3,
+    AP_AHRS_NavEKF ahrs{EKF2, EKF3,
             AP_AHRS_NavEKF::FLAG_ALWAYS_USE_EKF};
 };
 
 static DummyVehicle vehicle;
 
 // choose which AHRS system to use
-// AP_AHRS_DCM ahrs = AP_AHRS_DCM::create(ins, barometer, gps);
+// AP_AHRS_DCM ahrs = AP_AHRS_DCM::create(barometer, gps);
 AP_AHRS_NavEKF &ahrs = vehicle.ahrs;
 
 void setup(void)
