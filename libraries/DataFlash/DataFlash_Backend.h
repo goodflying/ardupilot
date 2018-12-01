@@ -89,7 +89,6 @@ public:
 
     void Log_Write_EntireMission(const AP_Mission &mission);
     bool Log_Write_Format(const struct LogStructure *structure);
-    bool Log_Write_MavCmd(uint16_t cmd_total, const mavlink_mission_item_t& mav_cmd);
     bool Log_Write_Message(const char *message);
     bool Log_Write_MessageF(const char *fmt, ...);
     bool Log_Write_Mission_Cmd(const AP_Mission &mission,
@@ -163,4 +162,6 @@ private:
     uint32_t _last_periodic_1Hz;
     uint32_t _last_periodic_10Hz;
     bool have_logged_armed;
+
+    void validate_WritePrioritisedBlock(const void *pBuffer, uint16_t size);
 };

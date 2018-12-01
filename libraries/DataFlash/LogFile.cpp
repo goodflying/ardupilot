@@ -188,8 +188,10 @@ void DataFlash_Class::Log_Write_RFND(const RangeFinder &rangefinder)
         LOG_PACKET_HEADER_INIT((uint8_t)(LOG_RFND_MSG)),
         time_us       : AP_HAL::micros64(),
         dist1         : s0 ? s0->distance_cm() : (uint16_t)0,
+        status1       : s0 ? (uint8_t)s0->status() : (uint8_t)0,
         orient1       : s0 ? s0->orientation() : ROTATION_NONE,
         dist2         : s1 ? s1->distance_cm() : (uint16_t)0,
+        status2       : s1 ? (uint8_t)s1->status() : (uint8_t)0,
         orient2       : s1 ? s1->orientation() : ROTATION_NONE,
     };
     WriteBlock(&pkt, sizeof(pkt));
@@ -407,13 +409,27 @@ void DataFlash_Class::Log_Write_Vibration()
     WriteBlock(&pkt, sizeof(pkt));
 }
 
-// Write a mission command. Total length : 36 bytes
 bool DataFlash_Backend::Log_Write_Mission_Cmd(const AP_Mission &mission,
                                               const AP_Mission::Mission_Command &cmd)
 {
-    mavlink_mission_item_t mav_cmd = {};
-    AP_Mission::mission_cmd_to_mavlink(cmd,mav_cmd);
-    return Log_Write_MavCmd(mission.num_commands(),mav_cmd);
+    mavlink_mission_item_int_t mav_cmd = {};
+    AP_Mission::mission_cmd_to_mavlink_int(cmd,mav_cmd);
+    struct log_Cmd pkt = {
+        LOG_PACKET_HEADER_INIT(LOG_CMD_MSG),
+        time_us         : AP_HAL::micros64(),
+        command_total   : mission.num_commands(),
+        sequence        : mav_cmd.seq,
+        command         : mav_cmd.command,
+        param1          : mav_cmd.param1,
+        param2          : mav_cmd.param2,
+        param3          : mav_cmd.param3,
+        param4          : mav_cmd.param4,
+        latitude        : mav_cmd.x,
+        longitude       : mav_cmd.y,
+        altitude        : mav_cmd.z,
+        frame           : mav_cmd.frame
+    };
+    return WriteBlock(&pkt, sizeof(pkt));
 }
 
 void DataFlash_Backend::Log_Write_EntireMission(const AP_Mission &mission)
@@ -1274,27 +1290,6 @@ void DataFlash_Class::Log_Write_EKF3(AP_AHRS_NavEKF &ahrs)
 }
 #endif
 
-// Write a command processing packet
-bool DataFlash_Backend::Log_Write_MavCmd(uint16_t cmd_total, const mavlink_mission_item_t& mav_cmd)
-{
-    struct log_Cmd pkt = {
-        LOG_PACKET_HEADER_INIT(LOG_CMD_MSG),
-        time_us         : AP_HAL::micros64(),
-        command_total   : (uint16_t)cmd_total,
-        sequence        : (uint16_t)mav_cmd.seq,
-        command         : (uint16_t)mav_cmd.command,
-        param1          : (float)mav_cmd.param1,
-        param2          : (float)mav_cmd.param2,
-        param3          : (float)mav_cmd.param3,
-        param4          : (float)mav_cmd.param4,
-        latitude        : (float)mav_cmd.x,
-        longitude       : (float)mav_cmd.y,
-        altitude        : (float)mav_cmd.z,
-        frame           : (uint8_t)mav_cmd.frame
-    };
-    return WriteBlock(&pkt, sizeof(pkt));
-}
-
 void DataFlash_Class::Log_Write_Radio(const mavlink_radio_t &packet)
 {
     struct log_Radio pkt = {
@@ -1312,7 +1307,7 @@ void DataFlash_Class::Log_Write_Radio(const mavlink_radio_t &packet)
 }
 
 // Write a Camera packet
-void DataFlash_Class::Log_Write_CameraInfo(enum LogMessages msg, const AP_AHRS &ahrs, const Location &current_loc)
+void DataFlash_Class::Log_Write_CameraInfo(enum LogMessages msg, const AP_AHRS &ahrs, const Location &current_loc, uint64_t timestamp_us)
 {
     int32_t altitude, altitude_rel, altitude_gps;
     if (current_loc.flags.relative_alt) {
@@ -1331,7 +1326,7 @@ void DataFlash_Class::Log_Write_CameraInfo(enum LogMessages msg, const AP_AHRS &
 
     struct log_Camera pkt = {
         LOG_PACKET_HEADER_INIT(static_cast<uint8_t>(msg)),
-        time_us     : AP_HAL::micros64(),
+        time_us     : timestamp_us?timestamp_us:AP_HAL::micros64(),
         gps_time    : gps.time_week_ms(),
         gps_week    : gps.time_week(),
         latitude    : current_loc.lat,
@@ -1347,15 +1342,15 @@ void DataFlash_Class::Log_Write_CameraInfo(enum LogMessages msg, const AP_AHRS &
 }
 
 // Write a Camera packet
-void DataFlash_Class::Log_Write_Camera(const AP_AHRS &ahrs, const Location &current_loc)
+void DataFlash_Class::Log_Write_Camera(const AP_AHRS &ahrs, const Location &current_loc, uint64_t timestamp_us)
 {
-    Log_Write_CameraInfo(LOG_CAMERA_MSG, ahrs, current_loc);
+    Log_Write_CameraInfo(LOG_CAMERA_MSG, ahrs, current_loc, timestamp_us);
 }
 
 // Write a Trigger packet
 void DataFlash_Class::Log_Write_Trigger(const AP_AHRS &ahrs, const Location &current_loc)
 {
-    Log_Write_CameraInfo(LOG_TRIGGER_MSG, ahrs, current_loc);
+    Log_Write_CameraInfo(LOG_TRIGGER_MSG, ahrs, current_loc, 0);
 }
 
 // Write an attitude packet
@@ -1437,20 +1432,23 @@ void DataFlash_Class::Log_Write_Current_instance(const uint64_t time_us,
 // Write an Current data packet
 void DataFlash_Class::Log_Write_Current()
 {
+    // Big painful assert to ensure that logging won't produce suprising results when the
+    // number of battery monitors changes, does have the built in expectation that
+    // LOG_COMPASS_MSG follows the last LOG_CURRENT_CELLSx_MSG
+    static_assert(((LOG_CURRENT_MSG + AP_BATT_MONITOR_MAX_INSTANCES) == LOG_CURRENT_CELLS_MSG) &&
+                  ((LOG_CURRENT_CELLS_MSG + AP_BATT_MONITOR_MAX_INSTANCES) == LOG_COMPASS_MSG),
+                  "The number of batt monitors has changed without updating the log "
+                  "table entries. Please add new enums for LOG_CURRENT_MSG, LOG_CURRENT_CELLS_MSG "
+                  "directly following the highest indexed fields. Don't forget to update the log "
+                  "description table as well.");
+
     const uint64_t time_us = AP_HAL::micros64();
     const uint8_t num_instances = AP::battery().num_instances();
-    if (num_instances >= 1) {
+    for (uint8_t i = 0; i < num_instances; i++) {
         Log_Write_Current_instance(time_us,
-                                   0,
-                                   LOG_CURRENT_MSG,
-                                   LOG_CURRENT_CELLS_MSG);
-    }
-
-    if (num_instances >= 2) {
-        Log_Write_Current_instance(time_us,
-                                   1,
-                                   LOG_CURRENT2_MSG,
-                                   LOG_CURRENT_CELLS2_MSG);
+                                   i,
+                                   (LogMessages)((uint8_t)LOG_CURRENT_MSG + i),
+                                   (LogMessages)((uint8_t)LOG_CURRENT_CELLS_MSG + i));
     }
 }
 
@@ -1589,11 +1587,11 @@ void DataFlash_Class::Log_Write_PID(uint8_t msg_type, const PID_Info &info)
         LOG_PACKET_HEADER_INIT(msg_type),
         time_us         : AP_HAL::micros64(),
         desired         : info.desired,
+        actual          : info.actual,
         P               : info.P,
         I               : info.I,
         D               : info.D,
-        FF              : info.FF,
-        AFF             : info.AFF
+        FF              : info.FF
     };
     WriteBlock(&pkt, sizeof(pkt));
 }

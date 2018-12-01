@@ -52,7 +52,9 @@ static memory_heap_t dtcm_heap;
 #define DMA_RESERVE_SIZE 4096
 #endif
 
+#if DMA_RESERVE_SIZE != 0
 static memory_heap_t dma_reserve_heap;
+#endif
 
 static void *malloc_dtcm(size_t size);
 
@@ -69,6 +71,7 @@ void malloc_init(void)
     chHeapObjectInit(&dtcm_heap, (void *)DTCM_BASE_ADDRESS, DTCM_RAM_SIZE_KB*1024);
 #endif
 
+#if DMA_RESERVE_SIZE != 0
     /*
       create a DMA reserve heap, to ensure we keep some memory for DMA
       safe memory allocations
@@ -78,6 +81,7 @@ void malloc_init(void)
         dma_reserve = chHeapAllocAligned(NULL, DMA_RESERVE_SIZE, MIN_ALIGNMENT);
     }
     chHeapObjectInit(&dma_reserve_heap, dma_reserve, DMA_RESERVE_SIZE);
+#endif //#if DMA_RESERVE_SIZE != 0
 }
 
 void *malloc_ccm(size_t size)
@@ -133,13 +137,14 @@ void *malloc(size_t size)
         }
     }
 
+#if DMA_RESERVE_SIZE != 0
     // fall back to DMA reserve
     p = chHeapAllocAligned(&dma_reserve_heap, size, MIN_ALIGNMENT);
     if (p) {
         memset(p, 0, size);
         return p;
     }
-
+#endif
     return NULL;
 }
 
@@ -155,9 +160,11 @@ void *malloc_dma(size_t size)
     // if we don't have DTCM memory then assume that main heap is DMA-safe
     p = chHeapAllocAligned(NULL, size, MIN_ALIGNMENT);
 #endif
+#if DMA_RESERVE_SIZE != 0
     if (p == NULL) {
         p = chHeapAllocAligned(&dma_reserve_heap, size, MIN_ALIGNMENT);
     }
+#endif
     if (p) {
         memset(p, 0, size);
     }
@@ -200,11 +207,30 @@ size_t mem_available(void)
     totalp += dtcm_available;
 #endif
 
+#if DMA_RESERVE_SIZE != 0
     size_t reserve_available = 0;
     chHeapStatus(&dma_reserve_heap, &reserve_available, NULL);
     totalp += reserve_available;
+#endif
 
     return totalp;
+}
+
+void *realloc(void *addr, size_t size)
+{
+    if (size == 0) {
+       free(addr);
+       return NULL;
+    }
+    if (addr == NULL) {
+        return malloc(size);
+    }
+    void *new_mem = malloc(size);
+    if (new_mem != NULL) {
+        memcpy(new_mem, addr, chHeapGetSize(addr) > size ? size : chHeapGetSize(addr));
+        free(addr);
+    }
+    return new_mem;
 }
 
 #endif // CH_CFG_USE_HEAP

@@ -37,7 +37,8 @@ public:
     /*
       get system identifier (STM32 serial number)
      */
-    bool get_system_id(char buf[40]);
+    bool get_system_id(char buf[40]) override;
+    bool get_system_id_unformatted(uint8_t buf[], uint8_t &len) override;
 
     uint32_t available_memory(void) override;
 
@@ -50,9 +51,6 @@ public:
     void perf_end(perf_counter_t) override;
     void perf_count(perf_counter_t) override;
     
-    // create a new semaphore
-    AP_HAL::Semaphore *new_semaphore(void) override { return new PX4::Semaphore; }
-
     void set_imu_temp(float current) override;
     void set_imu_target_temp(int8_t *target) override;
 

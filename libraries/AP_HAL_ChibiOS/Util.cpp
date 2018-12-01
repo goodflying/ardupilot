@@ -182,6 +182,8 @@ uint64_t Util::get_hw_rtc() const
     return stm32_get_utc_usec();
 }
 
+#ifndef HAL_NO_FLASH_SUPPORT
+
 bool Util::flash_bootloader()
 {
     uint32_t fw_size;
@@ -228,6 +230,7 @@ bool Util::flash_bootloader()
     free(fw);
     return false;
 }
+#endif //#ifndef HAL_NO_FLASH_SUPPORT
 
 /*
   display system identifer - board type and serial number
@@ -248,5 +251,12 @@ bool Util::get_system_id(char buf[40])
              (unsigned)serialid[7], (unsigned)serialid[6], (unsigned)serialid[5], (unsigned)serialid[4], 
              (unsigned)serialid[11], (unsigned)serialid[10], (unsigned)serialid[9],(unsigned)serialid[8]);
     buf[39] = 0;
+    return true;
+}
+
+bool Util::get_system_id_unformatted(uint8_t buf[], uint8_t &len)
+{
+    len = MIN(12, len);
+    memcpy(buf, (const void *)UDID_START, len);
     return true;
 }

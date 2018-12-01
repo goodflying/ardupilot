@@ -62,6 +62,7 @@ public:
       terminated
      */
     virtual bool get_system_id(char buf[40]) { return false; }
+    virtual bool get_system_id_unformatted(uint8_t buf[], uint8_t &len) { return false; }
 
     /**
        return commandline arguments, if available
@@ -99,9 +100,6 @@ public:
     virtual void perf_end(perf_counter_t h) {}
     virtual void perf_count(perf_counter_t h) {}
 
-    // create a new semaphore
-    virtual Semaphore *new_semaphore(void) { return nullptr; }
-
     // allocate and free DMA-capable memory if possible. Otherwise return normal memory
     enum Memory_Type {
         MEM_DMA_SAFE,
@@ -114,6 +112,7 @@ public:
        how much free memory do we have in bytes. If unknown return 4096
      */
     virtual uint32_t available_memory(void) { return 4096; }
+
 protected:
     // we start soft_armed false, so that actuators don't send any
     // values until the vehicle code has fully started
