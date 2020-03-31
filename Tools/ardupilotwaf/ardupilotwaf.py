@@ -25,7 +25,7 @@ COMMON_VEHICLE_DEPENDENT_LIBRARIES = [
     'AP_Baro',
     'AP_BattMonitor',
     'AP_BoardConfig',
-    'AP_Buffer',
+    'AP_Camera',
     'AP_Common',
     'AP_Compass',
     'AP_Declination',
@@ -35,6 +35,7 @@ COMMON_VEHICLE_DEPENDENT_LIBRARIES = [
     'AP_InertialSensor',
     'AP_Math',
     'AP_Mission',
+    'AP_NavEKF',
     'AP_NavEKF2',
     'AP_NavEKF3',
     'AP_Notify',
@@ -46,7 +47,8 @@ COMMON_VEHICLE_DEPENDENT_LIBRARIES = [
     'AP_SerialManager',
     'AP_Terrain',
     'AP_Vehicle',
-    'DataFlash',
+    'AP_InternalError',
+    'AP_Logger',
     'Filter',
     'GCS_MAVLink',
     'RC_Channel',
@@ -66,6 +68,9 @@ COMMON_VEHICLE_DEPENDENT_LIBRARIES = [
     'AP_Volz_Protocol',
     'AP_SBusOut',
     'AP_IOMCU',
+    'AP_Parachute',
+    'AP_PiccoloCAN',
+    'AP_PiccoloCAN/piccolo_protocol',
     'AP_RAMTRON',
     'AP_RCProtocol',
     'AP_Radio',
@@ -77,8 +82,21 @@ COMMON_VEHICLE_DEPENDENT_LIBRARIES = [
     'AP_Gripper',
     'AP_RTC',
     'AC_Sprayer',
+    'AC_Fence',
     'AC_Avoidance',
     'AP_LandingGear',
+    'AP_RobotisServo',
+    'AP_ToshibaCAN',
+    'AP_NMEA_Output',
+    'AP_Filesystem',
+    'AP_ADSB',
+    'AC_PID',
+    'AP_SerialLED',
+    'AP_EFI',
+    'AP_Hott_Telem',
+    'AP_ESC_Telem',
+    'AP_Stats',
+    'AP_GyroFFT',
 ]
 
 def get_legacy_defines(sketch_name):
@@ -198,6 +216,7 @@ def ap_common_vehicle_libraries(bld):
     if bld.env.DEST_BINFMT == 'pe':
         libraries += [
             'AC_Fence',
+            'AC_AttitudeControl',
         ]
 
     return libraries
@@ -249,6 +268,9 @@ def ap_program(bld,
         program_dir=program_dir,
         **kw
     )
+    if 'use' in kw and bld.env.STATIC_LINKING:
+        # ensure we link against vehicle library
+        tg.env.STLIB += [kw['use']]
 
     for group in program_groups:
         _grouped_programs.setdefault(group, []).append(tg)
@@ -494,6 +516,13 @@ special group "all" selects all programs.
         help='''Upload applicable targets to a connected device. Not all
 platforms may support this. Example: `waf copter --upload` means "build
 arducopter and upload it to my board".
+''')
+
+    g.add_option('--upload-port',
+        action='store',
+        dest='upload_port',
+        default=None,
+        help='''Specify the port to be used with the --upload option. For example a port of /dev/ttyS10 indicates that serial port 10 shuld be used.
 ''')
 
     g = opt.ap_groups['check']

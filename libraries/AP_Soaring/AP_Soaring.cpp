@@ -1,4 +1,5 @@
 #include "AP_Soaring.h"
+#include <AP_Logger/AP_Logger.h>
 #include <GCS_MAVLink/GCS.h>
 #include <stdint.h>
 extern const AP_HAL::HAL& hal;
@@ -24,7 +25,6 @@ const AP_Param::GroupInfo SoaringController::var_info[] = {
     // @Param: Q1
     // @DisplayName: Process noise
     // @Description: Standard deviation of noise in process for strength
-    // @Units:
     // @Range: 0 10
     // @User: Advanced
     AP_GROUPINFO("Q1", 3, SoaringController, thermal_q1, 0.001f),
@@ -32,7 +32,6 @@ const AP_Param::GroupInfo SoaringController::var_info[] = {
     // @Param: Q2
     // @DisplayName: Process noise
     // @Description: Standard deviation of noise in process for position and radius
-    // @Units:
     // @Range: 0 10
     // @User: Advanced
     AP_GROUPINFO("Q2", 4, SoaringController, thermal_q2, 0.03f),
@@ -40,7 +39,6 @@ const AP_Param::GroupInfo SoaringController::var_info[] = {
     // @Param: R
     // @DisplayName: Measurement noise
     // @Description: Standard deviation of noise in measurement
-    // @Units:
     // @Range: 0 10
     // @User: Advanced
 
@@ -73,7 +71,6 @@ const AP_Param::GroupInfo SoaringController::var_info[] = {
     // @Param: POLAR_CD0
     // @DisplayName: Zero lift drag coef.
     // @Description: Zero lift drag coefficient
-    // @Units:
     // @Range: 0 0.5
     // @User: Advanced
     AP_GROUPINFO("POLAR_CD0", 9, SoaringController, polar_CD0, 0.027),
@@ -81,7 +78,6 @@ const AP_Param::GroupInfo SoaringController::var_info[] = {
     // @Param: POLAR_B
     // @DisplayName: Induced drag coeffient
     // @Description: Induced drag coeffient
-    // @Units:
     // @Range: 0 0.5
     // @User: Advanced
     AP_GROUPINFO("POLAR_B", 10, SoaringController, polar_B, 0.031),
@@ -141,7 +137,7 @@ SoaringController::SoaringController(AP_AHRS &ahrs, AP_SpdHgtControl &spdHgt, co
 void SoaringController::get_target(Location &wp)
 {
     wp = _prev_update_location;
-    location_offset(wp, _ekf.X[2], _ekf.X[3]);
+    wp.offset(_ekf.X[2], _ekf.X[3]);
 }
 
 bool SoaringController::suppress_throttle()
@@ -238,7 +234,7 @@ void SoaringController::init_cruising()
 
 void SoaringController::get_wind_corrected_drift(const Location *current_loc, const Vector3f *wind, float *wind_drift_x, float *wind_drift_y, float *dx, float *dy)
 {
-    Vector2f diff = location_diff(_prev_update_location, *current_loc); // get distances from previous update
+    const Vector2f diff = _prev_update_location.get_distance_NE(*current_loc); // get distances from previous update
     *dx = diff.x;
     *dy = diff.y;
 
@@ -279,7 +275,7 @@ void SoaringController::update_thermalling()
 #endif
 
         // write log - save the data.
-        DataFlash_Class::instance()->Log_Write("SOAR", "TimeUS,nettorate,dx,dy,x0,x1,x2,x3,lat,lng,alt,dx_w,dy_w", "QfffffffLLfff", 
+        AP::logger().Write("SOAR", "TimeUS,nettorate,dx,dy,x0,x1,x2,x3,lat,lng,alt,dx_w,dy_w", "QfffffffLLfff", 
                                                AP_HAL::micros64(),
                                                (double)_vario.reading,
                                                (double)dx,

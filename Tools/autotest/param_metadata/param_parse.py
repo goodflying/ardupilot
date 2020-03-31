@@ -4,7 +4,7 @@ import glob
 import os
 import re
 import sys
-from optparse import OptionParser
+from argparse import ArgumentParser
 
 from param import (Library, Parameter, Vehicle, known_group_fields,
                    known_param_fields, required_param_fields, known_units)
@@ -13,39 +13,52 @@ from rstemit import RSTEmit
 from wikiemit import WikiEmit
 from xmlemit import XmlEmit
 from mdemit import MDEmit
+from jsonemit import JSONEmit
 
-parser = OptionParser("param_parse.py [options]")
-parser.add_option("-v", "--verbose", dest='verbose', action='store_true', default=False, help="show debugging output")
-parser.add_option("--vehicle", default='*', help="Vehicle type to generate for")
-parser.add_option("--no-emit",
-                  dest='emit_params',
-                  action='store_false',
-                  default=True,
-                  help="don't emit parameter documention, just validate")
-(opts, args) = parser.parse_args()
+parser = ArgumentParser(description="Parse ArduPilot parameters.")
+parser.add_argument("-v", "--verbose", dest='verbose', action='store_true', default=False, help="show debugging output")
+parser.add_argument("--vehicle", required=True, help="Vehicle type to generate for")
+parser.add_argument("--no-emit",
+                    dest='emit_params',
+                    action='store_false',
+                    default=True,
+                    help="don't emit parameter documention, just validate")
+parser.add_argument("--format",
+                    dest='output_format',
+                    action='store',
+                    default='all',
+                    choices=['all', 'html', 'rst', 'wiki', 'xml', 'json', 'edn', 'md'],
+                    help="what output format to use")
+args = parser.parse_args()
 
 
 # Regular expressions for parsing the parameter metadata
 
-prog_param = re.compile(r"@Param: (\w+).*((?:\n[ \t]*// @(\w+)(?:{([^}]+)})?: (.*))+)(?:\n\n|\n[ \t]+[A-Z])", re.MULTILINE)
+prog_param = re.compile(r"@Param: (\w+).*((?:\n[ \t]*// @(\w+)(?:{([^}]+)})?: (.*))+)(?:\n[ \t\r]*\n|\n[ \t]+[A-Z])", re.MULTILINE)
 
 # match e.g @Value: 0=Unity, 1=Koala, 17=Liability
-prog_param_fields = re.compile(r"[ \t]*// @(\w+): (.*)")
+prog_param_fields = re.compile(r"[ \t]*// @(\w+): ([^\r\n]*)")
 # match e.g @Value{Copter}: 0=Volcano, 1=Peppermint
-prog_param_tagged_fields = re.compile(r"[ \t]*// @(\w+){([^}]+)}: (.*)")
+prog_param_tagged_fields = re.compile(r"[ \t]*// @(\w+){([^}]+)}: ([^\r\n]*)")
 
 prog_groups = re.compile(r"@Group: *(\w+).*((?:\n[ \t]*// @(Path): (\S+))+)", re.MULTILINE)
 
 apm_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../../../')
-vehicle_paths = glob.glob(apm_path + "%s/Parameters.cpp" % opts.vehicle)
+vehicle_paths = glob.glob(apm_path + "%s/Parameters.cpp" % args.vehicle)
 extension = 'cpp'
 if len(vehicle_paths) == 0:
-    vehicle_paths = glob.glob(apm_path + "%s/Parameters.pde" % opts.vehicle)
+    vehicle_paths = glob.glob(apm_path + "%s/Parameters.pde" % args.vehicle)
     extension = 'pde'
 vehicle_paths.sort(reverse=True)
 
 vehicles = []
 libraries = []
+
+# AP_Vehicle also has parameters rooted at "", but isn't referenced
+# from the vehicle in any way:
+ap_vehicle_lib = Library("") # the "" is tacked onto the front of param name
+setattr(ap_vehicle_lib, "Path", os.path.join('..', 'libraries', 'AP_Vehicle', 'AP_Vehicle.cpp'))
+libraries.append(ap_vehicle_lib)
 
 error_count = 0
 current_param = None
@@ -54,7 +67,7 @@ current_file = None
 
 def debug(str_to_print):
     """Debug output if verbose is set."""
-    if opts.verbose:
+    if args.verbose:
         print(str_to_print)
 
 
@@ -118,7 +131,7 @@ for vehicle in vehicles:
         for field in fields:
             field_list.append(field[0])
             if field[0] in known_param_fields:
-                value = re.sub('@PREFIX@', "", field[1])
+                value = re.sub('@PREFIX@', "", field[1]).rstrip()
                 setattr(p, field[0], value)
             else:
                 error("param: unknown parameter metadata field '%s'" % field[0])
@@ -159,7 +172,7 @@ def process_library(vehicle, library, pathprefix=None):
             p_text = f.read()
             f.close()
         else:
-            error("Path %s not found for library %s" % (path, library.name))
+            error("Path %s not found for library %s (fname=%s)" % (path, library.name, libraryfname))
             continue
 
         param_matches = prog_param.findall(p_text)
@@ -207,14 +220,13 @@ def process_library(vehicle, library, pathprefix=None):
                 else:
                     error("tagged param<: unknown parameter metadata field '%s'" % field[0])
             if ((non_vehicle_specific_values_seen or not other_vehicle_values_seen) or this_vehicle_values_seen):
-                if this_vehicle_values_seen:
-                    debug("Setting vehicle-specific value (%s)" % str(this_vehicle_value))
+                if this_vehicle_values_seen and field[0] == 'Values':
                     setattr(p, field[0], this_vehicle_value)
 #                debug("Appending (non_vehicle_specific_values_seen=%u "
 #                      "other_vehicle_values_seen=%u this_vehicle_values_seen=%u)" %
 #                      (non_vehicle_specific_values_seen, other_vehicle_values_seen, this_vehicle_values_seen))
-                p.path = path # Add path. Later deleted - only used for duplicates
-                library.params.append(p)
+            p.path = path # Add path. Later deleted - only used for duplicates
+            library.params.append(p)
 
         group_matches = prog_groups.findall(p_text)
         debug("Found %u groups" % len(group_matches))
@@ -273,7 +285,8 @@ def validate(param):
     if (hasattr(param, "Range")):
         rangeValues = param.__dict__["Range"].split(" ")
         if (len(rangeValues) != 2):
-            error("Invalid Range values for %s" % (param.name))
+            error("Invalid Range values for %s (%s)" %
+                  (param.name, param.__dict__["Range"]))
             return
         min_value = rangeValues[0]
         max_value = rangeValues[1]
@@ -283,6 +296,15 @@ def validate(param):
         if not is_number(max_value):
             error("Max value not number: %s %s" % (param.name, max_value))
             return
+    # Check for duplicate in @value field 
+    if (hasattr(param, "Values")):
+        valueList = param.__dict__["Values"].split(",")
+        values = []
+        for i in valueList:
+            i = i.replace(" ","")
+            values.append(i.partition(":")[0])
+        if (len(values) != len(set(values))):
+            error("Duplicate values found")
     # Validate units
     if (hasattr(param, "Units")):
         if (param.__dict__["Units"] != "") and (param.__dict__["Units"] not in known_units):
@@ -318,22 +340,40 @@ for library in libraries:
 def do_emit(emit):
     emit.set_annotate_with_vehicle(len(vehicles) > 1)
     for vehicle in vehicles:
-        emit.emit(vehicle, f)
+        emit.emit(vehicle)
 
     emit.start_libraries()
 
     for library in libraries:
         if library.params:
-            emit.emit(library, f)
+            emit.emit(library)
 
     emit.close()
 
 
-if opts.emit_params:
-    do_emit(XmlEmit())
-    do_emit(WikiEmit())
-    do_emit(HtmlEmit())
-    do_emit(RSTEmit())
-    do_emit(MDEmit())
+if args.emit_params:
+    if args.output_format == 'all' or args.output_format == 'json':
+        do_emit(JSONEmit())
+    if args.output_format == 'all' or args.output_format == 'xml':
+        do_emit(XmlEmit())
+    if args.output_format == 'all' or args.output_format == 'wiki':
+        do_emit(WikiEmit())
+    if args.output_format == 'all' or args.output_format == 'html':
+        do_emit(HtmlEmit())
+    if args.output_format == 'all' or args.output_format == 'rst':
+        do_emit(RSTEmit())
+    if args.output_format == 'all' or args.output_format == 'md':
+        do_emit(MDEmit())
+    if args.output_format == 'all' or args.output_format == 'edn':
+        try:
+            from ednemit import EDNEmit
+            do_emit(EDNEmit())
+        except ImportError:
+            # if the user wanted edn only then don't hide any errors
+            if args.output_format == 'edn':
+                raise
+
+            if args.verbose:
+                print("Unable to emit EDN, install edn_format and pytz if edn is desired")
 
 sys.exit(error_count)

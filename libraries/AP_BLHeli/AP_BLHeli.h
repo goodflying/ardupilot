@@ -57,16 +57,18 @@ public:
 
     // get the most recent telemetry data packet for a motor
     bool get_telem_data(uint8_t esc_index, struct telem_data &td);
+    // return the average motor frequency in Hz for dynamic filtering
+    float get_average_motor_frequency_hz() const;
 
     static AP_BLHeli *get_singleton(void) {
-        return singleton;
+        return _singleton;
     }
 
     // send ESC telemetry messages over MAVLink
     void send_esc_telemetry_mavlink(uint8_t mav_chan);
     
 private:
-    static AP_BLHeli *singleton;
+    static AP_BLHeli *_singleton;
     
     // mask of channels to use for BLHeli protocol
     AP_Int32 channel_mask;
@@ -236,6 +238,9 @@ private:
 
     // have we locked the UART?
     bool uart_locked;
+
+    // true if we have a mix of reversable and normal ESC
+    bool mixed_type;
 
     // mapping from BLHeli motor numbers to RC output channels
     uint8_t motor_map[max_motors];

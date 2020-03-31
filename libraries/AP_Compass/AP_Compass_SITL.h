@@ -9,16 +9,17 @@
 #include <AP_Math/AP_Math.h>
 #include <AP_Declination/AP_Declination.h>
 
-#define SITL_NUM_COMPASSES 2
+#define MAX_SITL_COMPASSES 3
 
 class AP_Compass_SITL : public AP_Compass_Backend {
 public:
     AP_Compass_SITL();
 
-    void read(void);
+    void read(void) override;
 
 private:
-    uint8_t _compass_instance[SITL_NUM_COMPASSES];
+    uint8_t _compass_instance[MAX_SITL_COMPASSES];
+    uint8_t _num_compass;
     SITL::SITL *_sitl;
 
     // delay buffer variables

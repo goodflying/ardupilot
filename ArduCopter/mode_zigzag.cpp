@@ -9,14 +9,22 @@
 #define ZIGZAG_WP_RADIUS_CM 300
 
 // initialise zigzag controller
-bool Copter::ModeZigZag::init(bool ignore_checks)
+bool ModeZigZag::init(bool ignore_checks)
 {
-    if (!copter.position_ok() && !ignore_checks) {
-        return false;
-    }
+    if (!copter.failsafe.radio) {
+        // apply simple mode transform to pilot inputs
+        update_simple_mode();
 
-    // initialize's loiter position and velocity on xy-axes from current pos and velocity
-    loiter_nav->clear_pilot_desired_acceleration();
+        // convert pilot input to lean angles
+        float target_roll, target_pitch;
+        get_pilot_desired_lean_angles(target_roll, target_pitch, loiter_nav->get_angle_max_cd(), attitude_control->get_althold_lean_angle_max());
+
+        // process pilot's roll and pitch input
+        loiter_nav->set_pilot_desired_acceleration(target_roll, target_pitch, G_Dt);
+    } else {
+        // clear out pilot desired acceleration in case radio failsafe event occurs and we do not switch to RTL for some reason
+        loiter_nav->clear_pilot_desired_acceleration();
+    }
     loiter_nav->init_target();
 
     // initialise position_z and desired velocity_z
@@ -33,27 +41,34 @@ bool Copter::ModeZigZag::init(bool ignore_checks)
     return true;
 }
 
+// perform cleanup required when leaving zigzag mode
+void ModeZigZag::exit()
+{
+#if SPRAYER_ENABLED == ENABLED
+    // The pump will stop if the flight mode is changed from ZigZag to other
+    if (g2.zigzag_auto_pump_enabled) {
+        copter.sprayer.run(false);
+    }
+#endif
+}
+
 // run the zigzag controller
 // should be called at 100hz or more
-void Copter::ModeZigZag::run()
+void ModeZigZag::run()
 {
     // initialize vertical speed and acceleration's range
     pos_control->set_max_speed_z(-get_pilot_speed_dn(), g.pilot_speed_up);
     pos_control->set_max_accel_z(g.pilot_accel_z);
 
-    // if not auto armed or motors not enabled set throttle to zero and exit immediately
-    if (!motors->armed() || !ap.auto_armed || !motors->get_interlock() || ap.land_complete) {
-        zero_throttle_and_relax_ac();
-        return;
-    }
-
     // auto control
     if (stage == AUTO) {
-        // if vehicle has reached destination switch to manual control
-        if (reached_destination()) {
+        if (is_disarmed_or_landed() || !motors->get_interlock()) {
+            // vehicle should be under manual control when disarmed or landed
+            return_to_manual_control(false);
+        } else if (reached_destination()) {
+            // if vehicle has reached destination switch to manual control
             AP_Notify::events.waypoint_complete = 1;
-            stage = MANUAL_REGAIN;
-            loiter_nav->init_target(wp_nav->get_wp_destination());
+            return_to_manual_control(true);
         } else {
             auto_control();
         }
@@ -67,7 +82,7 @@ void Copter::ModeZigZag::run()
 }
 
 // save current position as A (dest_num = 0) or B (dest_num = 1).  If both A and B have been saved move to the one specified
-void Copter::ModeZigZag::save_or_move_to_destination(uint8_t dest_num)
+void ModeZigZag::save_or_move_to_destination(uint8_t dest_num)
 {
     // sanity check
     if (dest_num > 1) {
@@ -86,13 +101,13 @@ void Copter::ModeZigZag::save_or_move_to_destination(uint8_t dest_num)
                 dest_A.x = curr_pos.x;
                 dest_A.y = curr_pos.y;
                 gcs().send_text(MAV_SEVERITY_INFO, "ZigZag: point A stored");
-                copter.Log_Write_Event(DATA_ZIGZAG_STORE_A);
+                AP::logger().Write_Event(LogEvent::ZIGZAG_STORE_A);
             } else {
                 // store point B
                 dest_B.x = curr_pos.x;
                 dest_B.y = curr_pos.y;
                 gcs().send_text(MAV_SEVERITY_INFO, "ZigZag: point B stored");
-                copter.Log_Write_Event(DATA_ZIGZAG_STORE_B);
+                AP::logger().Write_Event(LogEvent::ZIGZAG_STORE_B);
             }
             // if both A and B have been stored advance state
             if (!dest_A.is_zero() && !dest_B.is_zero() && is_positive((dest_B - dest_A).length_squared())) {
@@ -104,11 +119,17 @@ void Copter::ModeZigZag::save_or_move_to_destination(uint8_t dest_num)
         case MANUAL_REGAIN:
             // A and B have been defined, move vehicle to destination A or B
             Vector3f next_dest;
-            if (calculate_next_dest(dest_num, next_dest)) {
-                // initialise waypoint controller
+            bool terr_alt;
+            if (calculate_next_dest(dest_num, stage == AUTO, next_dest, terr_alt)) {
                 wp_nav->wp_and_spline_init();
-                if (wp_nav->set_wp_destination(next_dest, false)) {
+                if (wp_nav->set_wp_destination(next_dest, terr_alt)) {
                     stage = AUTO;
+#if SPRAYER_ENABLED == ENABLED
+                    // spray on while moving to A or B
+                    if (g2.zigzag_auto_pump_enabled) {
+                        copter.sprayer.run(true);
+                    }
+#endif
                     reach_wp_time_ms = 0;
                     if (dest_num == 0) {
                         gcs().send_text(MAV_SEVERITY_INFO, "ZigZag: moving to A");
@@ -122,18 +143,32 @@ void Copter::ModeZigZag::save_or_move_to_destination(uint8_t dest_num)
 }
 
 // return manual control to the pilot
-void Copter::ModeZigZag::return_to_manual_control()
+void ModeZigZag::return_to_manual_control(bool maintain_target)
 {
     if (stage == AUTO) {
         stage = MANUAL_REGAIN;
+#if SPRAYER_ENABLED == ENABLED
+        // spray off
+        if (g2.zigzag_auto_pump_enabled) {
+            copter.sprayer.run(false);
+        }
+#endif
         loiter_nav->clear_pilot_desired_acceleration();
-        loiter_nav->init_target();
+        if (maintain_target) {
+            const Vector3f& wp_dest = wp_nav->get_wp_destination();
+            loiter_nav->init_target(wp_dest);
+            if (wp_nav->origin_and_destination_are_terrain_alt()) {
+                copter.surface_tracking.set_target_alt_cm(wp_dest.z);
+            }
+        } else {
+            loiter_nav->init_target();
+        }
         gcs().send_text(MAV_SEVERITY_INFO, "ZigZag: manual control");
     }
 }
 
 // fly the vehicle to closest point on line perpendicular to dest_A or dest_B
-void Copter::ModeZigZag::auto_control()
+void ModeZigZag::auto_control()
 {
     // process pilot's yaw input
     float target_yaw_rate = 0;
@@ -143,24 +178,30 @@ void Copter::ModeZigZag::auto_control()
     }
 
     // set motors to full range
-    motors->set_desired_spool_state(AP_Motors::DESIRED_THROTTLE_UNLIMITED);
+    motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
 
     // run waypoint controller
-    copter.failsafe_terrain_set_status(wp_nav->update_wpnav());
+    const bool wpnav_ok = wp_nav->update_wpnav();
 
     // call z-axis position controller (wp_nav should have already updated its alt target)
     pos_control->update_z_controller();
 
     // call attitude controller
     // roll & pitch from waypoint controller, yaw rate from pilot
-    attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(wp_nav->get_roll(), wp_nav->get_pitch(), target_yaw_rate);        
+    attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(wp_nav->get_roll(), wp_nav->get_pitch(), target_yaw_rate);
+
+    // if wpnav failed (because of lack of terrain data) switch back to pilot control for next iteration
+    if (!wpnav_ok) {
+        return_to_manual_control(false);
+    }
 }
 
 // manual_control - process manual control
-void Copter::ModeZigZag::manual_control()
+void ModeZigZag::manual_control()
 {
     float target_yaw_rate = 0.0f;
     float target_climb_rate = 0.0f;
+    float takeoff_climb_rate = 0.0f;
 
     // process pilot inputs unless we are in radio failsafe
     if (!copter.failsafe.radio) {
@@ -186,30 +227,86 @@ void Copter::ModeZigZag::manual_control()
         loiter_nav->clear_pilot_desired_acceleration();
     }
 
-    // set motors to full range
-    motors->set_desired_spool_state(AP_Motors::DESIRED_THROTTLE_UNLIMITED);
+    // relax loiter target if we might be landed
+    if (copter.ap.land_complete_maybe) {
+        loiter_nav->soften_for_landing();
+    }
 
-    // run loiter controller
-    loiter_nav->update();
+    // Loiter State Machine Determination
+    AltHoldModeState althold_state = get_alt_hold_state(target_climb_rate);
 
-    // call attitude controller
-    attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(loiter_nav->get_roll(), loiter_nav->get_pitch(), target_yaw_rate);
+    // althold state machine
+    switch (althold_state) {
 
-    // adjust climb rate using rangefinder
-    target_climb_rate = get_surface_tracking_climb_rate(target_climb_rate, pos_control->get_alt_target(), G_Dt);
+    case AltHold_MotorStopped:
+        attitude_control->reset_rate_controller_I_terms();
+        attitude_control->set_yaw_target_to_current_heading();
+        pos_control->relax_alt_hold_controllers(0.0f);   // forces throttle output to go to zero
+        loiter_nav->init_target();
+        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(loiter_nav->get_roll(), loiter_nav->get_pitch(), target_yaw_rate);
+        pos_control->update_z_controller();
+        break;
 
-    // get avoidance adjusted climb rate
-    target_climb_rate = get_avoidance_adjusted_climbrate(target_climb_rate);
+    case AltHold_Takeoff:
+        // initiate take-off
+        if (!takeoff.running()) {
+            takeoff.start(constrain_float(g.pilot_takeoff_alt,0.0f,1000.0f));
+        }
 
-    // update altitude target and call position controller
-    pos_control->set_alt_target_from_climb_rate_ff(target_climb_rate, G_Dt, false);
+        // get takeoff adjusted pilot and takeoff climb rates
+        takeoff.get_climb_rates(target_climb_rate, takeoff_climb_rate);
 
-    // adjusts target up or down using a climb rate
-    pos_control->update_z_controller();
+        // get avoidance adjusted climb rate
+        target_climb_rate = get_avoidance_adjusted_climbrate(target_climb_rate);
+
+        // run loiter controller
+        loiter_nav->update();
+
+        // call attitude controller
+        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(loiter_nav->get_roll(), loiter_nav->get_pitch(), target_yaw_rate);
+
+        // update altitude target and call position controller
+        pos_control->set_alt_target_from_climb_rate_ff(target_climb_rate, G_Dt, false);
+        pos_control->add_takeoff_climb_rate(takeoff_climb_rate, G_Dt);
+        pos_control->update_z_controller();
+        break;
+
+    case AltHold_Landed_Ground_Idle:
+        attitude_control->set_yaw_target_to_current_heading();
+        FALLTHROUGH;
+
+    case AltHold_Landed_Pre_Takeoff:
+        attitude_control->reset_rate_controller_I_terms();
+        loiter_nav->init_target();
+        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(0.0f, 0.0f, 0.0f);
+        pos_control->relax_alt_hold_controllers(0.0f);   // forces throttle output to go to zero
+        pos_control->update_z_controller();
+        break;
+
+    case AltHold_Flying:
+        // set motors to full range
+        motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
+
+        // run loiter controller
+        loiter_nav->update();
+
+        // call attitude controller
+        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(loiter_nav->get_roll(), loiter_nav->get_pitch(), target_yaw_rate);
+
+        // adjust climb rate using rangefinder
+        target_climb_rate = copter.surface_tracking.adjust_climb_rate(target_climb_rate);
+
+        // get avoidance adjusted climb rate
+        target_climb_rate = get_avoidance_adjusted_climbrate(target_climb_rate);
+
+        pos_control->set_alt_target_from_climb_rate_ff(target_climb_rate, G_Dt, false);
+        pos_control->update_z_controller();
+        break;
+    }
 }
 
 // return true if vehicle is within a small area around the destination
-bool Copter::ModeZigZag::reached_destination()
+bool ModeZigZag::reached_destination()
 {
     // check if wp_nav believes it has reached the destination
     if (!wp_nav->reached_wp_destination()) {
@@ -230,7 +327,9 @@ bool Copter::ModeZigZag::reached_destination()
 }
 
 // calculate next destination according to vector A-B and current position
-bool Copter::ModeZigZag::calculate_next_dest(uint8_t dest_num, Vector3f& next_dest) const
+// use_wpnav_alt should be true if waypoint controller's altitude target should be used, false for position control or current altitude target
+// terrain_alt is returned as true if the next_dest should be considered a terrain alt
+bool ModeZigZag::calculate_next_dest(uint8_t dest_num, bool use_wpnav_alt, Vector3f& next_dest, bool& terrain_alt) const
 {
     // sanity check dest_num
     if (dest_num > 1) {
@@ -268,7 +367,22 @@ bool Copter::ModeZigZag::calculate_next_dest(uint8_t dest_num, Vector3f& next_de
     const Vector2f closest2d = Vector2f::closest_point(curr_pos2d, perp1, perp2);
     next_dest.x = closest2d.x;
     next_dest.y = closest2d.y;
-    next_dest.z = pos_control->is_active_z() ? pos_control->get_alt_target() : curr_pos.z;
+
+    if (use_wpnav_alt) {
+        // get altitude target from waypoint controller
+        terrain_alt = wp_nav->origin_and_destination_are_terrain_alt();
+        next_dest.z = wp_nav->get_wp_destination().z;
+    } else {
+        // if we have a downward facing range finder then use terrain altitude targets
+        terrain_alt = copter.rangefinder_alt_ok() && wp_nav->rangefinder_used_and_healthy();
+        if (terrain_alt) {
+            if (!copter.surface_tracking.get_target_alt_cm(next_dest.z)) {
+                next_dest.z = copter.rangefinder_state.alt_cm_filt.get();
+            }
+        } else {
+            next_dest.z = pos_control->is_active_z() ? pos_control->get_alt_target() : curr_pos.z;
+        }
+    }
 
     return true;
 }
