@@ -2,13 +2,18 @@
 // lua/src/lua.c. It overall modified the functions to the minimum amount
 // required, with the exception of fixing whitespace/indentation on if's
 
+#include "AP_Scripting_config.h"
+
+#if AP_SCRIPTING_ENABLED
 
 #include "lua_scripts.h"
-#include "lua_generated_bindings.h"
+#include <AP_Scripting/lua_generated_bindings.h>
 
 #include "lua/src/lua.h"
 #include "lua/src/lauxlib.h"
 #include "lua/src/lualib.h"
+
+#include <AP_Logger/LogStructure.h>
 
 #if !defined(LUA_MAXINPUT)
 #define LUA_MAXINPUT    256
@@ -44,7 +49,7 @@ static int msghandler(lua_State *L) {
 ** Interface to 'lua_pcall', which sets appropriate message function
 ** and C-signal handler. Used to run all chunks.
 */
-int lua_scripts::docall(lua_State *L, int narg, int nres) {
+int lua_scripts::docall(lua_State *L, int narg, int nres) const {
     int status;
     int base = lua_gettop(L) - narg;  /* function index */
     lua_rawgeti(L, LUA_REGISTRYINDEX, sandbox_ref);
@@ -255,3 +260,5 @@ void lua_scripts::doREPL(lua_State *L) {
     repl_cleanup();
 }
 
+
+#endif  // AP_SCRIPTING_ENABLED

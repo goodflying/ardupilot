@@ -27,6 +27,7 @@ const AP_RAMTRON::ramtron_id AP_RAMTRON::ramtron_ids[] = {
     { 0x21, 0x08,  16, 2, RDID_type::Cypress }, // FM25V01A
     { 0x22, 0x00,  32, 2, RDID_type::Cypress }, // FM25V02
     { 0x22, 0x08,  32, 2, RDID_type::Cypress }, // FM25V02A
+    { 0x22, 0x48,  32, 2, RDID_type::Cypress }, // FM25V02A - Extended Temperature Version
     { 0x22, 0x01,  32, 2, RDID_type::Cypress }, // FM25VN02
     { 0x23, 0x00,  64, 2, RDID_type::Cypress }, // FM25V05
     { 0x23, 0x01,  64, 2, RDID_type::Cypress }, // FM25VN05
@@ -38,6 +39,10 @@ const AP_RAMTRON::ramtron_id AP_RAMTRON::ramtron_ids[] = {
     { 0x27, 0x03, 128, 3, RDID_type::Fujitsu }, // MB85RS1MT
     { 0x05, 0x09,  32, 2, RDID_type::Fujitsu }, // MB85RS256B
     { 0x24, 0x03,  16, 2, RDID_type::Fujitsu }, // MB85RS128TY
+    { 0x25, 0x03,  32, 2, RDID_type::Fujitsu }, // MB85RS256TY
+
+    { 0x22, 0x00,  16, 2, RDID_type::Petabytes }, // PB85RS128C
+    { 0x24, 0x00, 256, 3, RDID_type::Petabytes }, // PB85RS2MC
 };
 
 // initialise the driver
@@ -45,10 +50,9 @@ bool AP_RAMTRON::init(void)
 {
     dev = hal.spi->get_device("ramtron");
     if (!dev) {
-        hal.console->printf("No RAMTRON device\n");
+        DEV_PRINTF("No RAMTRON device\n");
         return false;
     }
-    WITH_SEMAPHORE(dev->get_semaphore());
 
     struct cypress_rdid {
         uint8_t manufacturer[6];
@@ -61,25 +65,42 @@ bool AP_RAMTRON::init(void)
         uint8_t id1;
         uint8_t id2;
     };
+    struct petabytes_rdid {
+        uint8_t manufacturer[2];
+        uint8_t id1;
+        uint8_t id2;
+    };
 
     uint8_t rdid[sizeof(cypress_rdid)];
 
-    if (!dev->read_registers(RAMTRON_RDID, rdid, sizeof(rdid))) {
-        return false;
+    {
+        WITH_SEMAPHORE(dev->get_semaphore());
+        if (!dev->read_registers(RAMTRON_RDID, rdid, sizeof(rdid))) {
+            return false;
+        }
     }
 
     for (uint8_t i = 0; i < ARRAY_SIZE(ramtron_ids); i++) {
         if (ramtron_ids[i].rdid_type == RDID_type::Cypress) {
-            cypress_rdid const * const cypress = (cypress_rdid const * const)rdid;
+            const cypress_rdid *cypress = (const cypress_rdid *)rdid;
             if (ramtron_ids[i].id1 == cypress->id1 &&
                 ramtron_ids[i].id2 == cypress->id2) {
                 id = i;
                 break;
             }
         } else if (ramtron_ids[i].rdid_type == RDID_type::Fujitsu) {
-            fujitsu_rdid const * const fujitsu = (fujitsu_rdid const * const)rdid;
+            const fujitsu_rdid *fujitsu = (const fujitsu_rdid *)rdid;
             if (ramtron_ids[i].id1 == fujitsu->id1 &&
                 ramtron_ids[i].id2 == fujitsu->id2) {
+                id = i;
+                break;
+             }
+        } else if (ramtron_ids[i].rdid_type == RDID_type::Petabytes) {
+            const petabytes_rdid *petabytes = (const petabytes_rdid *)rdid;
+            if (petabytes->manufacturer[0] == 0x62 && 
+                petabytes->manufacturer[1] == 0x8C &&
+                ramtron_ids[i].id1 == petabytes->id1 &&
+                ramtron_ids[i].id2 == petabytes->id2) {
                 id = i;
                 break;
             }
@@ -87,7 +108,7 @@ bool AP_RAMTRON::init(void)
     }
 
     if (id == UINT8_MAX) {
-        hal.console->printf("Unknown RAMTRON device\n");
+        DEV_PRINTF("Unknown RAMTRON device\n");
         return false;
     }
 

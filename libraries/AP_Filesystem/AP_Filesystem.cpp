@@ -15,22 +15,45 @@
 
 #include "AP_Filesystem.h"
 
-#if HAVE_FILESYSTEM_SUPPORT
+#include "AP_Filesystem_config.h"
+#include <AP_HAL/HAL.h>
+#include <AP_HAL/Util.h>
 
 static AP_Filesystem fs;
 
-#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+// create exactly one "local" filesystem:
+#if AP_FILESYSTEM_FATFS_ENABLED
 #include "AP_Filesystem_FATFS.h"
 static AP_Filesystem_FATFS fs_local;
-#endif
-#if CONFIG_HAL_BOARD == HAL_BOARD_LINUX || CONFIG_HAL_BOARD == HAL_BOARD_SITL
+#elif AP_FILESYSTEM_ESP32_ENABLED
+#include "AP_Filesystem_ESP32.h"
+static AP_Filesystem_ESP32 fs_local;
+#elif AP_FILESYSTEM_POSIX_ENABLED
 #include "AP_Filesystem_posix.h"
 static AP_Filesystem_Posix fs_local;
+#else
+static AP_Filesystem_Backend fs_local;
+int errno;
 #endif
 
-#ifdef HAL_HAVE_AP_ROMFS_EMBEDDED_H
+#if AP_FILESYSTEM_ROMFS_ENABLED
 #include "AP_Filesystem_ROMFS.h"
 static AP_Filesystem_ROMFS fs_romfs;
+#endif
+
+#if AP_FILESYSTEM_PARAM_ENABLED
+#include "AP_Filesystem_Param.h"
+static AP_Filesystem_Param fs_param;
+#endif
+
+#if AP_FILESYSTEM_SYS_ENABLED
+#include "AP_Filesystem_Sys.h"
+static AP_Filesystem_Sys fs_sys;
+#endif
+
+#if AP_FILESYSTEM_MISSION_ENABLED
+#include "AP_Filesystem_Mission.h"
+static AP_Filesystem_Mission fs_mission;
 #endif
 
 /*
@@ -38,14 +61,26 @@ static AP_Filesystem_ROMFS fs_romfs;
  */
 const AP_Filesystem::Backend AP_Filesystem::backends[] = {
     { nullptr, fs_local },
-#ifdef HAL_HAVE_AP_ROMFS_EMBEDDED_H
+#if AP_FILESYSTEM_ROMFS_ENABLED
     { "@ROMFS/", fs_romfs },
+#endif
+#if AP_FILESYSTEM_PARAM_ENABLED
+    { "@PARAM/", fs_param },
+#endif
+#if AP_FILESYSTEM_SYS_ENABLED
+    { "@SYS/", fs_sys },
+    { "@SYS", fs_sys },
+#endif
+#if AP_FILESYSTEM_MISSION_ENABLED
+    { "@MISSION/", fs_mission },
 #endif
 };
 
+extern const AP_HAL::HAL& hal;
+
 #define MAX_FD_PER_BACKEND 256U
 #define NUM_BACKENDS ARRAY_SIZE(backends)
-#define LOCAL_BACKEND backends[0];
+#define LOCAL_BACKEND backends[0]
 #define BACKEND_IDX(backend) (&(backend) - &backends[0])
 
 /*
@@ -77,10 +112,10 @@ const AP_Filesystem::Backend &AP_Filesystem::backend_by_fd(int &fd) const
     return backends[idx];
 }
 
-int AP_Filesystem::open(const char *fname, int flags)
+int AP_Filesystem::open(const char *fname, int flags, bool allow_absolute_paths)
 {
     const Backend &backend = backend_by_path(fname);
-    int fd = backend.fs.open(fname, flags);
+    int fd = backend.fs.open(fname, flags, allow_absolute_paths);
     if (fd < 0) {
         return -1;
     }
@@ -101,13 +136,13 @@ int AP_Filesystem::close(int fd)
     return backend.fs.close(fd);
 }
 
-ssize_t AP_Filesystem::read(int fd, void *buf, size_t count)
+int32_t AP_Filesystem::read(int fd, void *buf, uint32_t count)
 {
     const Backend &backend = backend_by_fd(fd);
     return backend.fs.read(fd, buf, count);
 }
 
-ssize_t AP_Filesystem::write(int fd, const void *buf, size_t count)
+int32_t AP_Filesystem::write(int fd, const void *buf, uint32_t count)
 {
     const Backend &backend = backend_by_fd(fd);
     return backend.fs.write(fd, buf, count);
@@ -119,7 +154,7 @@ int AP_Filesystem::fsync(int fd)
     return backend.fs.fsync(fd);
 }
 
-off_t AP_Filesystem::lseek(int fd, off_t offset, int seek_from)
+int32_t AP_Filesystem::lseek(int fd, int32_t offset, int seek_from)
 {
     const Backend &backend = backend_by_fd(fd);
     return backend.fs.lseek(fd, offset, seek_from);
@@ -141,6 +176,12 @@ int AP_Filesystem::mkdir(const char *pathname)
 {
     const Backend &backend = backend_by_path(pathname);
     return backend.fs.mkdir(pathname);
+}
+
+int AP_Filesystem::rename(const char *oldpath, const char *newpath)
+{
+    const Backend &backend = backend_by_path(oldpath);
+    return backend.fs.rename(oldpath, newpath);
 }
 
 AP_Filesystem::DirHandle *AP_Filesystem::opendir(const char *pathname)
@@ -197,11 +238,68 @@ int64_t AP_Filesystem::disk_space(const char *path)
 /*
   set mtime on a file
  */
-bool AP_Filesystem::set_mtime(const char *filename, const time_t mtime_sec)
+bool AP_Filesystem::set_mtime(const char *filename, const uint32_t mtime_sec)
 {
     const Backend &backend = backend_by_path(filename);
     return backend.fs.set_mtime(filename, mtime_sec);
 }
+
+// if filesystem is not running then try a remount
+bool AP_Filesystem::retry_mount(void)
+{
+    return LOCAL_BACKEND.fs.retry_mount();
+}
+
+// unmount filesystem for reboot
+void AP_Filesystem::unmount(void)
+{
+    return LOCAL_BACKEND.fs.unmount();
+}
+
+/*
+  load a file to memory as a single chunk. Use only for small files
+ */
+FileData *AP_Filesystem::load_file(const char *filename)
+{
+    const Backend &backend = backend_by_path(filename);
+    return backend.fs.load_file(filename);
+}
+
+// returns null-terminated string; cr or lf terminates line
+bool AP_Filesystem::fgets(char *buf, uint8_t buflen, int fd)
+{
+    const Backend &backend = backend_by_fd(fd);
+
+    uint8_t i = 0;
+    for (; i<buflen-1; i++) {
+        if (backend.fs.read(fd, &buf[i], 1) <= 0) {
+            if (i==0) {
+                return false;
+            }
+            break;
+        }
+        if (buf[i] == '\r' || buf[i] == '\n') {
+            break;
+        }
+    }
+    buf[i] = '\0';
+    return true;
+}
+
+#if AP_FILESYSTEM_FORMAT_ENABLED
+// format filesystem
+bool AP_Filesystem::format(void)
+{
+    if (hal.util->get_soft_armed()) {
+        return false;
+    }
+    return LOCAL_BACKEND.fs.format();
+}
+AP_Filesystem_Backend::FormatStatus AP_Filesystem::get_format_status(void) const
+{
+    return LOCAL_BACKEND.fs.get_format_status();
+}
+#endif
 
 namespace AP
 {
@@ -210,4 +308,4 @@ AP_Filesystem &FS()
     return fs;
 }
 }
-#endif
+

@@ -1,5 +1,9 @@
 #pragma once
 
+#include "AP_RTC_config.h"
+
+#if AP_RTC_ENABLED
+
 #include <AP_Param/AP_Param.h>
 
 #include <stdint.h>
@@ -38,11 +42,15 @@ public:
     /*
       get time in UTC hours, minutes, seconds and milliseconds
      */
-    bool get_system_clock_utc(uint8_t &hour, uint8_t &min, uint8_t &sec, uint16_t &ms);
+    bool get_system_clock_utc(uint8_t &hour, uint8_t &min, uint8_t &sec, uint16_t &ms) const;
     
-    bool get_local_time(uint8_t &hour, uint8_t &min, uint8_t &sec, uint16_t &ms);
+    bool get_local_time(uint8_t &hour, uint8_t &min, uint8_t &sec, uint16_t &ms) const;
 
     uint32_t get_time_utc(int32_t hour, int32_t min, int32_t sec, int32_t ms);
+
+    // get date and time.  Returns true on success and fills in year, month, day, hour, min, sec and ms
+    // year is the regular Gregorian year, month is 0~11, day is 1~31, hour is 0~23, minute is 0~59, second is 0~60 (1 leap second), ms is 0~999
+    bool get_date_and_time_utc(uint16_t& year, uint8_t& month, uint8_t& day, uint8_t &hour, uint8_t &min, uint8_t &sec, uint16_t &ms) const;
 
     // get singleton instance
     static AP_RTC *get_singleton() {
@@ -67,3 +75,5 @@ private:
 namespace AP {
     AP_RTC &rtc();
 };
+
+#endif  // AP_RTC_ENABLED

@@ -17,6 +17,9 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "GCS_config.h"
+
+#if AP_MAVLINK_MSG_SERIAL_CONTROL_ENABLED
 
 #include <AP_HAL/AP_HAL.h>
 #include "GCS.h"
@@ -62,11 +65,11 @@ void GCS_MAVLINK::handle_serial_control(const mavlink_message_t &msg)
         break;
     }
     case SERIAL_CONTROL_DEV_GPS1:
-        stream = port = hal.uartB;
+        stream = port = hal.serial(3);
         AP::gps().lock_port(0, exclusive);
         break;
     case SERIAL_CONTROL_DEV_GPS2:
-        stream = port = hal.uartE;
+        stream = port = hal.serial(4);
         AP::gps().lock_port(1, exclusive);
         break;
     case SERIAL_CONTROL_DEV_SHELL:
@@ -75,10 +78,21 @@ void GCS_MAVLINK::handle_serial_control(const mavlink_message_t &msg)
             return;
         }
         break;
-    case SERIAL_CONTROL_SERIAL0 ... SERIAL_CONTROL_SERIAL9:
+    case SERIAL_CONTROL_SERIAL0 ... SERIAL_CONTROL_SERIAL9: {
         // direct access to a SERIALn port
         stream = port = AP::serialmanager().get_serial_by_id(packet.device - SERIAL_CONTROL_SERIAL0);
+
+        // see if we need to lock mavlink
+        for (uint8_t i=0; i<gcs().num_gcs(); i++) {
+            GCS_MAVLINK *link = gcs().chan(i);
+            if (link == nullptr || link->get_uart() != port) {
+                continue;
+            }
+            link->lock(exclusive);
+            break;
+        }
         break;
+    }
 
     default:
         // not supported yet
@@ -188,3 +202,5 @@ more_data:
         goto more_data;
     }
 }
+
+#endif  // AP_MAVLINK_MSG_SERIAL_CONTROL_ENABLED

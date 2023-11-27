@@ -18,6 +18,9 @@
 #pragma once
 
 #include <AP_HAL/AP_HAL.h>
+#include <AP_Networking/AP_Networking_Config.h>
+#if AP_NETWORKING_SOCKETS_ENABLED
+
 #if HAL_OS_SOCKETS
 
 #include <fcntl.h>
@@ -28,6 +31,10 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <sys/select.h>
+#elif AP_NETWORKING_BACKEND_CHIBIOS
+#include <AP_Networking/AP_Networking_ChibiOS.h>
+#include <lwip/sockets.h>
+#endif
 
 class SocketAPM {
 public:
@@ -36,18 +43,19 @@ public:
     ~SocketAPM();
 
     bool connect(const char *address, uint16_t port);
+    bool connect_timeout(const char *address, uint16_t port, uint32_t timeout_ms);
     bool bind(const char *address, uint16_t port);
-    bool reuseaddress();
-    bool set_blocking(bool blocking);
-    bool set_cloexec();
-    void set_broadcast(void);
+    bool reuseaddress() const;
+    bool set_blocking(bool blocking) const;
+    bool set_cloexec() const;
+    void set_broadcast(void) const;
 
-    ssize_t send(const void *pkt, size_t size);
+    ssize_t send(const void *pkt, size_t size) const;
     ssize_t sendto(const void *buf, size_t size, const char *address, uint16_t port);
     ssize_t recv(void *pkt, size_t size, uint32_t timeout_ms);
 
     // return the IP address and port of the last received packet
-    void last_recv_address(const char *&ip_addr, uint16_t &port);
+    void last_recv_address(const char *&ip_addr, uint16_t &port) const;
 
     // return true if there is pending data for input
     bool pollin(uint32_t timeout_ms);
@@ -56,19 +64,34 @@ public:
     bool pollout(uint32_t timeout_ms);
 
     // start listening for new tcp connections
-    bool listen(uint16_t backlog);
+    bool listen(uint16_t backlog) const;
 
     // accept a new connection. Only valid for TCP connections after
     // listen has been used. A new socket is returned
     SocketAPM *accept(uint32_t timeout_ms);
 
+    // get a FD suitable for read selection
+    int get_read_fd(void) const {
+        return fd_in != -1? fd_in : fd;
+    }
+
+    bool is_connected(void) const {
+        return connected;
+    }
+
 private:
     bool datagram;
     struct sockaddr_in in_addr {};
+    bool is_multicast_address(struct sockaddr_in &addr) const;
 
     int fd = -1;
+
+    // fd_in is used for multicast UDP
+    int fd_in = -1;
+
+    bool connected;
 
     void make_sockaddr(const char *address, uint16_t port, struct sockaddr_in &sockaddr);
 };
 
-#endif // HAL_OS_SOCKETS
+#endif // AP_NETWORKING_SOCKETS_ENABLED
