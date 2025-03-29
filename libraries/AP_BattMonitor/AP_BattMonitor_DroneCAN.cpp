@@ -26,7 +26,7 @@ const AP_Param::GroupInfo AP_BattMonitor_DroneCAN::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("CURR_MULT", 30, AP_BattMonitor_DroneCAN, _curr_mult, 1.0),
 
-    // Param indexes must be between 30 and 39 to avoid conflict with other battery monitor param tables loaded by pointer
+    // CHECK/UPDATE INDEX TABLE IN AP_BattMonitor_Backend.cpp WHEN CHANGING OR ADDING PARAMETERS
 
     AP_GROUPEND
 };
@@ -42,23 +42,14 @@ AP_BattMonitor_DroneCAN::AP_BattMonitor_DroneCAN(AP_BattMonitor &mon, AP_BattMon
     _state.healthy = false;
 }
 
-void AP_BattMonitor_DroneCAN::subscribe_msgs(AP_DroneCAN* ap_dronecan)
+bool AP_BattMonitor_DroneCAN::subscribe_msgs(AP_DroneCAN* ap_dronecan)
 {
-    if (ap_dronecan == nullptr) {
-        return;
-    }
+    const auto driver_index = ap_dronecan->get_driver_index();
 
-    if (Canard::allocate_sub_arg_callback(ap_dronecan, &handle_battery_info_trampoline, ap_dronecan->get_driver_index()) == nullptr) {
-        AP_BoardConfig::allocation_error("battinfo_sub");
-    }
-
-    if (Canard::allocate_sub_arg_callback(ap_dronecan, &handle_battery_info_aux_trampoline, ap_dronecan->get_driver_index()) == nullptr) {
-        AP_BoardConfig::allocation_error("battinfo_aux_sub");
-    }
-
-    if (Canard::allocate_sub_arg_callback(ap_dronecan, &handle_mppt_stream_trampoline, ap_dronecan->get_driver_index()) == nullptr) {
-        AP_BoardConfig::allocation_error("mppt_stream_sub");
-    }
+    return (Canard::allocate_sub_arg_callback(ap_dronecan, &handle_battery_info_trampoline, driver_index) != nullptr)
+        && (Canard::allocate_sub_arg_callback(ap_dronecan, &handle_battery_info_aux_trampoline, driver_index) != nullptr)
+        && (Canard::allocate_sub_arg_callback(ap_dronecan, &handle_mppt_stream_trampoline, driver_index) != nullptr)
+    ;
 }
 
 /*
@@ -79,7 +70,7 @@ AP_BattMonitor_DroneCAN* AP_BattMonitor_DroneCAN::get_dronecan_backend(AP_DroneC
     const auto &batt = AP::battery();
     for (uint8_t i = 0; i < batt._num_instances; i++) {
         if (batt.drivers[i] == nullptr ||
-            batt.get_type(i) != AP_BattMonitor::Type::UAVCAN_BatteryInfo) {
+            batt.allocated_type(i) != AP_BattMonitor::Type::UAVCAN_BatteryInfo) {
             continue;
         }
         AP_BattMonitor_DroneCAN* driver = (AP_BattMonitor_DroneCAN*)batt.drivers[i];
@@ -90,7 +81,7 @@ AP_BattMonitor_DroneCAN* AP_BattMonitor_DroneCAN::get_dronecan_backend(AP_DroneC
     // find empty uavcan driver
     for (uint8_t i = 0; i < batt._num_instances; i++) {
         if (batt.drivers[i] != nullptr &&
-            batt.get_type(i) == AP_BattMonitor::Type::UAVCAN_BatteryInfo &&
+            batt.allocated_type(i) == AP_BattMonitor::Type::UAVCAN_BatteryInfo &&
             match_battery_id(i, battery_id)) {
 
             AP_BattMonitor_DroneCAN* batmon = (AP_BattMonitor_DroneCAN*)batt.drivers[i];
@@ -114,14 +105,20 @@ AP_BattMonitor_DroneCAN* AP_BattMonitor_DroneCAN::get_dronecan_backend(AP_DroneC
 
 void AP_BattMonitor_DroneCAN::handle_battery_info(const uavcan_equipment_power_BatteryInfo &msg)
 {
-    update_interim_state(msg.voltage, msg.current, msg.temperature, msg.state_of_charge_pct); 
+    update_interim_state(msg.voltage, msg.current, msg.temperature, msg.state_of_charge_pct, msg.state_of_health_pct); 
 
     WITH_SEMAPHORE(_sem_battmon);
     _remaining_capacity_wh = msg.remaining_capacity_wh;
     _full_charge_capacity_wh = msg.full_charge_capacity_wh;
+
+    // consume state of health
+    if (msg.state_of_health_pct != UAVCAN_EQUIPMENT_POWER_BATTERYINFO_STATE_OF_HEALTH_UNKNOWN) {
+        _interim_state.state_of_health_pct = msg.state_of_health_pct;
+        _interim_state.has_state_of_health_pct = true;
+    }
 }
 
-void AP_BattMonitor_DroneCAN::update_interim_state(const float voltage, const float current, const float temperature_K, const uint8_t soc)
+void AP_BattMonitor_DroneCAN::update_interim_state(const float voltage, const float current, const float temperature_K, const uint8_t soc, uint8_t soh_pct)
 {
     WITH_SEMAPHORE(_sem_battmon);
 
@@ -143,6 +140,12 @@ void AP_BattMonitor_DroneCAN::update_interim_state(const float voltage, const fl
 
         // update total current drawn since startup
         update_consumed(_interim_state, dt_us);
+    }
+
+    // state of health
+    if (soh_pct != UAVCAN_EQUIPMENT_POWER_BATTERYINFO_STATE_OF_HEALTH_UNKNOWN) {
+        _interim_state.state_of_health_pct = soh_pct;
+        _interim_state.has_state_of_health_pct = true;
     }
 
     // record time
@@ -185,7 +188,7 @@ void AP_BattMonitor_DroneCAN::handle_mppt_stream(const mppt_Stream &msg)
     // convert C to Kelvin
     const float temperature_K = isnan(msg.temperature) ? 0 : C_TO_KELVIN(msg.temperature);
 
-    update_interim_state(voltage, current, temperature_K, soc); 
+    update_interim_state(voltage, current, temperature_K, soc, UAVCAN_EQUIPMENT_POWER_BATTERYINFO_STATE_OF_HEALTH_UNKNOWN); 
 
     if (!_mppt.is_detected) {
         // this is the first time the mppt message has been received
@@ -229,7 +232,7 @@ void AP_BattMonitor_DroneCAN::handle_battery_info_aux_trampoline(AP_DroneCAN *ap
     for (uint8_t i = 0; i < batt._num_instances; i++) {
         const auto *drv = batt.drivers[i];
         if (drv != nullptr &&
-            batt.get_type(i) == AP_BattMonitor::Type::UAVCAN_BatteryInfo &&
+            batt.allocated_type(i) == AP_BattMonitor::Type::UAVCAN_BatteryInfo &&
             drv->option_is_set(AP_BattMonitor_Params::Options::AllowSplitAuxInfo) &&
             batt.get_serial_number(i) == int32_t(msg.battery_id)) {
             driver = (AP_BattMonitor_DroneCAN *)batt.drivers[i];
@@ -283,6 +286,8 @@ void AP_BattMonitor_DroneCAN::read()
     _state.time_remaining = _interim_state.time_remaining;
     _state.has_time_remaining = _interim_state.has_time_remaining;
     _state.is_powering_off = _interim_state.is_powering_off;
+    _state.state_of_health_pct = _interim_state.state_of_health_pct;
+    _state.has_state_of_health_pct = _interim_state.has_state_of_health_pct;
     memcpy(_state.cell_voltages.cells, _interim_state.cell_voltages.cells, sizeof(_state.cell_voltages));
 
     _has_temperature = (AP_HAL::millis() - _state.temperature_time) <= AP_BATT_MONITOR_TIMEOUT;
@@ -391,7 +396,7 @@ void AP_BattMonitor_DroneCAN::mppt_set_powered_state(bool power_on)
     request.disable = !request.enable;
 
     if (mppt_outputenable_client == nullptr) {
-        mppt_outputenable_client = new Canard::Client<mppt_OutputEnableResponse>{_ap_dronecan->get_canard_iface(), mppt_outputenable_res_cb};
+        mppt_outputenable_client = NEW_NOTHROW Canard::Client<mppt_OutputEnableResponse>{_ap_dronecan->get_canard_iface(), mppt_outputenable_res_cb};
         if (mppt_outputenable_client == nullptr) {
             return;
         }

@@ -154,6 +154,11 @@ public:
      */
     virtual uint16_t get_erpm(uint8_t chan) const { return 0; }
     virtual float get_erpm_error_rate(uint8_t chan) const { return 100.0f; }
+    /*
+      allow all erpm values to be read and for new updates to be detected - primarily for IOMCU
+     */
+    virtual bool  new_erpm() { return false; }
+    virtual uint32_t  read_erpm(uint16_t* erpm, uint8_t len) { return 0; }
 
     /*
       enable PX4IO SBUS out at the given rate
@@ -372,6 +377,11 @@ public:
     virtual void write_gpio(uint8_t chan, bool active) {};
 
     /*
+      Force group trigger from all callers rather than just from the main thread
+    */
+    virtual void force_trigger_groups(bool onoff) {};
+
+    /*
      * calculate the prescaler required to achieve the desire bitrate
      */
     static uint32_t calculate_bitrate_prescaler(uint32_t timer_clock, uint32_t target_frequency, bool at_least_freq = false);
@@ -401,7 +411,7 @@ public:
 
     // See WS2812B spec for expected pulse widths
     static constexpr uint32_t NEOP_BIT_WIDTH_TICKS = 8;
-    static constexpr uint32_t NEOP_BIT_0_TICKS = 3;
+    static constexpr uint32_t NEOP_BIT_0_TICKS = 2;
     static constexpr uint32_t NEOP_BIT_1_TICKS = 6;
     // neopixel does not use pulse widths at all
     static constexpr uint32_t PROFI_BIT_0_TICKS = 7;
@@ -417,6 +427,6 @@ protected:
     void append_to_banner(char banner_msg[], uint8_t banner_msg_len, output_mode out_mode, uint8_t low_ch, uint8_t high_ch) const;
     const char* get_output_mode_string(enum output_mode out_mode) const;
 
-    uint16_t _esc_pwm_min;
-    uint16_t _esc_pwm_max;
+    uint16_t _esc_pwm_min = 1000;
+    uint16_t _esc_pwm_max = 2000;
 };

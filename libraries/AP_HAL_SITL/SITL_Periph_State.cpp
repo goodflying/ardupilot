@@ -17,7 +17,7 @@
 
 #include <AP_Param/AP_Param.h>
 #include <SITL/SIM_JSBSim.h>
-#include <AP_HAL/utility/Socket.h>
+#include <AP_HAL/utility/Socket_native.h>
 #include <AP_HAL/utility/getopt_cpp.h>
 #include <SITL/SITL.h>
 
@@ -83,11 +83,9 @@ void SITL_State::init(int argc, char * const argv[]) {
         case CMDLINE_SERIAL6:
         case CMDLINE_SERIAL7:
         case CMDLINE_SERIAL8:
-        case CMDLINE_SERIAL9: {
-            static const uint8_t mapping[] = { 0, 2, 3, 1, 4, 5, 6, 7, 8, 9 };
-            _uart_path[mapping[opt - CMDLINE_SERIAL0]] = gopt.optarg;
+        case CMDLINE_SERIAL9:
+            _serial_path[opt - CMDLINE_SERIAL0] = gopt.optarg;
             break;
-        }
         case CMDLINE_DEFAULTS:
             defaults_path = strdup(gopt.optarg);
             break;
@@ -114,7 +112,7 @@ void SITL_State::init(int argc, char * const argv[]) {
 
     printf("Running Instance: %d\n", _instance);
 
-    sitl_model = new SimMCast("");
+    sitl_model = NEW_NOTHROW SimMCast("");
 
     _sitl = AP::sitl();
 
@@ -125,11 +123,15 @@ void SITL_State::init(int argc, char * const argv[]) {
 void SITL_State::wait_clock(uint64_t wait_time_usec)
 {
     while (AP_HAL::micros64() < wait_time_usec) {
-        struct sitl_input input {};
-        sitl_model->update(input);
-        sim_update();
-        update_voltage_current(input, 0);
-        usleep(100);
+        if (hal.scheduler->in_main_thread() ||
+            Scheduler::from(hal.scheduler)->semaphore_wait_hack_required()) {
+            struct sitl_input input {};
+            sitl_model->update(input); // delays up to 1 millisecond
+            sim_update();
+            update_voltage_current(input, 0);
+        } else {
+            usleep(1000);
+        }
     }
 }
 
@@ -197,7 +199,7 @@ void SimMCast::multicast_read(void)
         printf("Waiting for multicast state\n");
     }
     struct SITL::sitl_fdm state;
-    while (sock.recv((void*)&state, sizeof(state), 0) != sizeof(state)) {
+    while (sock.recv((void*)&state, sizeof(state), 1) != sizeof(state)) {
         // nop
     }
     if (_sitl->state.timestamp_us == 0) {

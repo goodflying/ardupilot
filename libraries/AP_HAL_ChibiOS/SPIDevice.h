@@ -26,7 +26,7 @@
 #include "Device.h"
 
 #ifndef HAL_SPI_SCK_SAVE_RESTORE
-#define HAL_SPI_SCK_SAVE_RESTORE TRUE
+#define HAL_SPI_SCK_SAVE_RESTORE !defined(STM32F1)
 #endif
 
 namespace ChibiOS {
@@ -177,7 +177,7 @@ public:
         return static_cast<SPIDeviceManager*>(spi_mgr);
     }
 
-    AP_HAL::OwnPtr<AP_HAL::SPIDevice> get_device(const char *name) override;
+    AP_HAL::SPIDevice *get_device_ptr(const char *name) override;
 
     void set_register_rw_callback(const char* name, AP_HAL::Device::RegisterRWCb cb) override;
 

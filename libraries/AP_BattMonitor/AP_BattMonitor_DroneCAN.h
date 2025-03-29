@@ -47,7 +47,7 @@ public:
     // return mavlink fault bitmask (see MAV_BATTERY_FAULT enum)
     uint32_t get_mavlink_fault_bitmask() const override;
 
-    static void subscribe_msgs(AP_DroneCAN* ap_dronecan);
+    static bool subscribe_msgs(AP_DroneCAN* ap_dronecan);
     static AP_BattMonitor_DroneCAN* get_dronecan_backend(AP_DroneCAN* ap_dronecan, uint8_t node_id, uint8_t battery_id);
     static void handle_battery_info_trampoline(AP_DroneCAN *ap_dronecan, const CanardRxTransfer& transfer, const uavcan_equipment_power_BatteryInfo &msg);
     static void handle_battery_info_aux_trampoline(AP_DroneCAN *ap_dronecan, const CanardRxTransfer& transfer, const ardupilot_equipment_power_BatteryInfoAux &msg);
@@ -61,7 +61,7 @@ public:
 private:
     void handle_battery_info(const uavcan_equipment_power_BatteryInfo &msg);
     void handle_battery_info_aux(const ardupilot_equipment_power_BatteryInfoAux &msg);
-    void update_interim_state(const float voltage, const float current, const float temperature_K, const uint8_t soc);
+    void update_interim_state(const float voltage, const float current, const float temperature_K, const uint8_t soc, uint8_t soh_pct);
 
     static bool match_battery_id(uint8_t instance, uint8_t battery_id);
 

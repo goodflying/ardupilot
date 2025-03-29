@@ -248,14 +248,6 @@ void AP_MotorsHeli_Dual::calculate_armed_scalars()
         _main_rotor._rsc_mode.save();
         _heliflags.save_rsc_mode = false;
     }
-
-    if (_heliflags.in_autorotation) {
-        _main_rotor.set_autorotation_flag(_heliflags.in_autorotation);
-        // set bailout ramp time
-        _main_rotor.use_bailout_ramp_time(_heliflags.enable_bailout);
-    }else { 
-        _main_rotor.set_autorotation_flag(false);
-    }
 }
 
 // calculate_scalars
@@ -360,12 +352,12 @@ void AP_MotorsHeli_Dual::mix_intermeshing(float pitch_input, float roll_input, f
 }
 
 // update_motor_controls - sends commands to motor controllers
-void AP_MotorsHeli_Dual::update_motor_control(RotorControlState state)
+void AP_MotorsHeli_Dual::update_motor_control(AP_MotorsHeli_RSC::RotorControlState state)
 {
     // Send state update to motors
     _main_rotor.output(state);
 
-    if (state == ROTOR_CONTROL_STOP) {
+    if (state == AP_MotorsHeli_RSC::RotorControlState::STOP) {
         // set engine run enable aux output to not run position to kill engine when disarmed
         SRV_Channels::set_output_limit(SRV_Channel::k_engine_run_enable, SRV_Channel::Limit::MIN);
     } else {
@@ -374,7 +366,8 @@ void AP_MotorsHeli_Dual::update_motor_control(RotorControlState state)
     }
 
     // Check if rotors are run-up
-    _heliflags.rotor_runup_complete = _main_rotor.is_runup_complete();
+    set_rotor_runup_complete(_main_rotor.is_runup_complete());
+
     // Check if rotors are spooled down
     _heliflags.rotor_spooldown_complete = _main_rotor.is_spooldown_complete();
 }
@@ -403,7 +396,8 @@ void AP_MotorsHeli_Dual::move_actuators(float roll_out, float pitch_out, float c
             pitch_out = _cyclic_max/4500.0f;
             limit.pitch = true;
         }
-    } else {
+    }
+    if (_dual_mode != AP_MOTORS_HELI_DUAL_MODE_TRANSVERSE) {
         if (roll_out < -_cyclic_max/4500.0f) {
             roll_out = -_cyclic_max/4500.0f;
             limit.roll = true;
@@ -413,10 +407,6 @@ void AP_MotorsHeli_Dual::move_actuators(float roll_out, float pitch_out, float c
             roll_out = _cyclic_max/4500.0f;
             limit.roll = true;
         }
-    }
-
-    if (_heliflags.inverted_flight) {
-        collective_in = 1 - collective_in;
     }
 
     // constrain collective input
@@ -437,11 +427,7 @@ void AP_MotorsHeli_Dual::move_actuators(float roll_out, float pitch_out, float c
     }
 
     // updates below land min collective flag
-    if (collective_out <= _collective_land_min_pct) {
-        _heliflags.below_land_min_coll = true;
-    } else {
-        _heliflags.below_land_min_coll = false;
-    }
+    _heliflags.below_land_min_coll = !is_positive(collective_out - _collective_land_min_pct);
 
     // updates takeoff collective flag based on 50% hover collective
     update_takeoff_collective_flag(collective_out);
@@ -525,25 +511,8 @@ void AP_MotorsHeli_Dual::output_to_motors()
     _swashplate1.output();
     _swashplate2.output();
 
-    switch (_spool_state) {
-        case SpoolState::SHUT_DOWN:
-            // sends minimum values out to the motors
-            update_motor_control(ROTOR_CONTROL_STOP);
-            break;
-        case SpoolState::GROUND_IDLE:
-            // sends idle output to motors when armed. rotor could be static or turning (autorotation)
-            update_motor_control(ROTOR_CONTROL_IDLE);
-            break;
-        case SpoolState::SPOOLING_UP:
-        case SpoolState::THROTTLE_UNLIMITED:
-            // set motor output based on thrust requests
-            update_motor_control(ROTOR_CONTROL_ACTIVE);
-            break;
-        case SpoolState::SPOOLING_DOWN:
-            // sends idle output to motors and wait for rotor to stop
-            update_motor_control(ROTOR_CONTROL_IDLE);
-            break;
-    }
+    update_motor_control(get_rotor_control_state());
+
 }
 
 // servo_test - move servos through full range of movement
@@ -614,3 +583,16 @@ bool AP_MotorsHeli_Dual::arming_checks(size_t buflen, char *buffer) const
 
     return true;
 }
+
+#if HAL_LOGGING_ENABLED
+// heli motors logging - called at 10 Hz
+void AP_MotorsHeli_Dual::Log_Write(void)
+{
+    // write swashplate log
+    _swashplate1.write_log(get_cyclic_angle_scaler(), _collective_min_deg.get(), _collective_max_deg.get(), _collective_min.get(), _collective_max.get());
+    _swashplate2.write_log(get_cyclic_angle_scaler(), _collective_min_deg.get(), _collective_max_deg.get(), _collective2_min.get(), _collective2_max.get());
+
+    // write RSC log
+    _main_rotor.write_log();
+}
+#endif

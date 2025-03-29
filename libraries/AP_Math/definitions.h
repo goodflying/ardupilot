@@ -42,6 +42,7 @@ static const double RAD_TO_DEG_DOUBLE = 1 / DEG_TO_RAD_DOUBLE;
 #endif
 
 #define RadiansToCentiDegrees(x) (static_cast<float>(x) * RAD_TO_DEG * static_cast<float>(100))
+#define CentiDegreesToRadians(x) (static_cast<float>(x) * DEG_TO_RAD * 0.01f)
 
 // acceleration due to gravity in m/s/s
 #define GRAVITY_MSS     9.80665f
@@ -94,6 +95,9 @@ static const double WGS84_E = (sqrt(2 * WGS84_F - WGS84_F * WGS84_F));
 #define SSL_AIR_TEMPERATURE    288.15f // K
 
 #define INCH_OF_H2O_TO_PASCAL 248.84f
+
+#define UTESLA_TO_MGAUSS   10.0f // uT to mGauss conversion
+#define NTESLA_TO_MGAUSS   0.01f // nT to mGauss conversion
 
 /*
   use AP_ prefix to prevent conflict with OS headers, such as NuttX

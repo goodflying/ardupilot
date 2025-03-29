@@ -5,7 +5,7 @@
 bool ModeAuto::_enter()
 {
     // fail to enter auto if no mission commands
-    if (mission.num_commands() <= 1) {
+    if (!mission.present()) {
         gcs().send_text(MAV_SEVERITY_NOTICE, "No Mission. Can't set AUTO.");
         return false;
     }
@@ -47,7 +47,7 @@ void ModeAuto::update()
     // check if mission exists (due to being cleared while disarmed in AUTO,
     // if no mission, then stop...needs mode change out of AUTO, mission load,
     // and change back to AUTO to run a mission at this point
-    if (!hal.util->get_soft_armed() && mission.num_commands() <= 1) {
+    if (!hal.util->get_soft_armed() && !mission.present()) {
         start_stop();
     }
     // start or update mission
@@ -82,21 +82,15 @@ void ModeAuto::update()
     switch (_submode) {
         case SubMode::WP:
         {
-            // check if we've reached the destination
-            if (!g2.wp_nav.reached_destination() || g2.wp_nav.is_fast_waypoint()) {
-                // update navigation controller
+            // boats loiter once the waypoint is reached
+            bool keep_navigating = true;
+            if (rover.is_boat() && g2.wp_nav.reached_destination() && !g2.wp_nav.is_fast_waypoint()) {
+                keep_navigating = !start_loiter();
+            }
+
+            // update navigation controller
+            if (keep_navigating) {
                 navigate_to_waypoint();
-            } else {
-                // we have reached the destination so stay here
-                if (rover.is_boat()) {
-                    if (!start_loiter()) {
-                        start_stop();
-                    }
-                } else {
-                    start_stop();
-                }
-                // update distance to destination
-                _distance_to_destination = rover.current_loc.get_distance(g2.wp_nav.get_destination());
             }
             break;
         }
@@ -147,7 +141,7 @@ void ModeAuto::update()
             break;
 
         case SubMode::Circle:
-            rover.g2.mode_circle.update();
+            g2.mode_circle.update();
             break;
     }
 }
@@ -179,7 +173,7 @@ float ModeAuto::wp_bearing() const
     case SubMode::NavScriptTime:
         return rover.mode_guided.wp_bearing();
     case SubMode::Circle:
-        return rover.g2.mode_circle.wp_bearing();
+        return g2.mode_circle.wp_bearing();
     }
 
     // this line should never be reached
@@ -203,7 +197,7 @@ float ModeAuto::nav_bearing() const
     case SubMode::NavScriptTime:
         return rover.mode_guided.nav_bearing();
     case SubMode::Circle:
-        return rover.g2.mode_circle.nav_bearing();
+        return g2.mode_circle.nav_bearing();
     }
 
     // this line should never be reached
@@ -227,7 +221,7 @@ float ModeAuto::crosstrack_error() const
     case SubMode::NavScriptTime:
         return rover.mode_guided.crosstrack_error();
     case SubMode::Circle:
-        return rover.g2.mode_circle.crosstrack_error();
+        return g2.mode_circle.crosstrack_error();
     }
 
     // this line should never be reached
@@ -251,7 +245,7 @@ float ModeAuto::get_desired_lat_accel() const
     case SubMode::NavScriptTime:
         return rover.mode_guided.get_desired_lat_accel();
     case SubMode::Circle:
-        return rover.g2.mode_circle.get_desired_lat_accel();
+        return g2.mode_circle.get_desired_lat_accel();
     }
 
     // this line should never be reached
@@ -276,7 +270,7 @@ float ModeAuto::get_distance_to_destination() const
     case SubMode::NavScriptTime:
         return rover.mode_guided.get_distance_to_destination();
     case SubMode::Circle:
-        return rover.g2.mode_circle.get_distance_to_destination();
+        return g2.mode_circle.get_distance_to_destination();
     }
 
     // this line should never be reached
@@ -305,7 +299,7 @@ bool ModeAuto::get_desired_location(Location& destination) const
     case SubMode::NavScriptTime:
         return rover.mode_guided.get_desired_location(destination);
     case SubMode::Circle:
-        return rover.g2.mode_circle.get_desired_location(destination);
+        return g2.mode_circle.get_desired_location(destination);
     }
 
     // we should never reach here but just in case
@@ -347,7 +341,7 @@ bool ModeAuto::reached_destination() const
     case SubMode::NavScriptTime:
         return rover.mode_guided.reached_destination();
     case SubMode::Circle:
-        return rover.g2.mode_circle.reached_destination();
+        return g2.mode_circle.reached_destination();
     }
 
     // we should never reach here but just in case, return true to allow missions to continue
@@ -372,7 +366,7 @@ bool ModeAuto::set_desired_speed(float speed)
     case SubMode::NavScriptTime:
         return rover.mode_guided.set_desired_speed(speed);
     case SubMode::Circle:
-        return rover.g2.mode_circle.set_desired_speed(speed);
+        return g2.mode_circle.set_desired_speed(speed);
     }
     return false;
 }
@@ -518,11 +512,6 @@ void ModeAuto::send_guided_position_target()
 /********************************************************************************/
 bool ModeAuto::start_command(const AP_Mission::Mission_Command& cmd)
 {
-    // log when new commands start
-    if (rover.should_log(MASK_LOG_CMD)) {
-        rover.logger.Write_Mission_Cmd(mission, cmd);
-    }
-
     switch (cmd.id) {
     case MAV_CMD_NAV_WAYPOINT:  // Navigate to Waypoint
         return do_nav_wp(cmd, false);
@@ -580,6 +569,9 @@ bool ModeAuto::start_command(const AP_Mission::Mission_Command& cmd)
     // system to control the vehicle attitude and the attitude of various
     // devices such as cameras.
     //    |Region of interest mode. (see MAV_ROI enum)| Waypoint index/ target ID. (see MAV_ROI enum)| ROI index (allows a vehicle to manage multiple cameras etc.)| Empty| x the location of the fixed ROI (see MAV_FRAME)| y| z|
+    // ROI_NONE can be handled by the regular ROI handler because lat, lon, alt are always zero
+    case MAV_CMD_DO_SET_ROI_LOCATION:
+    case MAV_CMD_DO_SET_ROI_NONE:
     case MAV_CMD_DO_SET_ROI:
         if (cmd.content.location.alt == 0 && cmd.content.location.lat == 0 && cmd.content.location.lng == 0) {
             // switch off the camera tracking if enabled
@@ -595,18 +587,6 @@ bool ModeAuto::start_command(const AP_Mission::Mission_Command& cmd)
 
     case MAV_CMD_DO_SET_REVERSE:
         do_set_reverse(cmd);
-        break;
-
-    case MAV_CMD_DO_FENCE_ENABLE:
-#if AP_FENCE_ENABLED
-        if (cmd.p1 == 0) {  //disable
-            rover.fence.enable(false);
-            gcs().send_text(MAV_SEVERITY_INFO, "Fence Disabled");
-        } else {  //enable fence
-            rover.fence.enable(true);
-            gcs().send_text(MAV_SEVERITY_INFO, "Fence Enabled");
-        }
-#endif
         break;
 
     case MAV_CMD_DO_GUIDED_LIMITS:
@@ -630,16 +610,25 @@ void ModeAuto::exit_mission()
     // send message
     gcs().send_text(MAV_SEVERITY_NOTICE, "Mission Complete");
 
-    if (g2.mis_done_behave == MIS_DONE_BEHAVE_LOITER && start_loiter()) {
-        return;
-    }
-
-    if (g2.mis_done_behave == MIS_DONE_BEHAVE_ACRO && rover.set_mode(rover.mode_acro, ModeReason::MISSION_END)) {
-        return;
-    }
-
-    if (g2.mis_done_behave == MIS_DONE_BEHAVE_MANUAL && rover.set_mode(rover.mode_manual, ModeReason::MISSION_END)) {
-        return;
+    switch ((DoneBehaviour)g2.mis_done_behave) {
+    case DoneBehaviour::HOLD:
+        // the default "start_stop" behaviour is used
+        break;
+    case DoneBehaviour::LOITER:
+        if (start_loiter()) {
+            return;
+        }
+        break;
+    case DoneBehaviour::ACRO:
+        if (rover.set_mode(rover.mode_acro, ModeReason::MISSION_END)) {
+            return;
+        }
+        break;
+    case DoneBehaviour::MANUAL:
+        if (rover.set_mode(rover.mode_manual, ModeReason::MISSION_END)) {
+            return;
+        }
+        break;
     }
 
     start_stop();
@@ -710,6 +699,8 @@ bool ModeAuto::verify_command(const AP_Mission::Mission_Command& cmd)
     case MAV_CMD_DO_CHANGE_SPEED:
     case MAV_CMD_DO_SET_HOME:
     case MAV_CMD_DO_SET_CAM_TRIGG_DIST:
+    case MAV_CMD_DO_SET_ROI_LOCATION:
+    case MAV_CMD_DO_SET_ROI_NONE:
     case MAV_CMD_DO_SET_ROI:
     case MAV_CMD_DO_SET_REVERSE:
     case MAV_CMD_DO_FENCE_ENABLE:
@@ -906,7 +897,7 @@ bool ModeAuto::verify_nav_guided_enable(const AP_Mission::Mission_Command& cmd)
 
     // if a location target was set, return true once vehicle is close
     if (guided_target.valid) {
-        if (rover.current_loc.get_distance(guided_target.loc) <= rover.g2.wp_nav.get_radius()) {
+        if (rover.current_loc.get_distance(guided_target.loc) <= g2.wp_nav.get_radius()) {
             return true;
         }
     }
@@ -949,8 +940,9 @@ bool ModeAuto::do_circle(const AP_Mission::Mission_Command& cmd)
 
 bool ModeAuto::verify_circle(const AP_Mission::Mission_Command& cmd)
 {
+    const float turns = cmd.get_loiter_turns();
     // check if we have completed circling
-    return ((g2.mode_circle.get_angle_total_rad() / M_2PI) >= LOWBYTE(cmd.p1));
+    return ((g2.mode_circle.get_angle_total_rad() / M_2PI) >= turns);
 }
 
 /********************************************************************************/

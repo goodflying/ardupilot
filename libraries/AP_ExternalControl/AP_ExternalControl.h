@@ -8,6 +8,8 @@
 
 #if AP_EXTERNAL_CONTROL_ENABLED
 
+#include <AP_Arming/AP_Arming.h>
+#include <AP_Common/Location.h>
 #include <AP_Math/AP_Math.h>
 
 class AP_ExternalControl
@@ -24,9 +26,28 @@ public:
         return false;
     }
 
+    /*
+        Sets the target global position with standard guided mode behavior.
+    */
+    virtual bool set_global_position(const Location& loc) WARN_IF_UNUSED {
+        return false;
+    }
+
+    /*
+        Arm the vehicle
+    */
+    virtual bool arm(AP_Arming::Method method, bool do_arming_checks) WARN_IF_UNUSED;
+
+    /*
+        Disarm the vehicle
+    */
+    virtual bool disarm(AP_Arming::Method method, bool do_disarm_checks) WARN_IF_UNUSED;
+
     static AP_ExternalControl *get_singleton(void) WARN_IF_UNUSED {
         return singleton;
     }
+protected:
+    ~AP_ExternalControl() {}
 
 private:
     static AP_ExternalControl *singleton;

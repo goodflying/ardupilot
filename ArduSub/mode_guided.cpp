@@ -93,6 +93,7 @@ void ModeGuided::guided_pos_control_start()
     sub.wp_nav.set_wp_destination(stopping_point, false);
 
     // initialise yaw
+    sub.yaw_rate_only = false;
     set_auto_yaw_mode(get_default_auto_yaw_mode(false));
 }
 
@@ -111,6 +112,7 @@ void ModeGuided::guided_vel_control_start()
     position_control->init_xy_controller();
 
     // pilot always controls yaw
+    sub.yaw_rate_only = false;
     set_auto_yaw_mode(AUTO_YAW_HOLD);
 }
 
@@ -129,6 +131,7 @@ void ModeGuided::guided_posvel_control_start()
     position_control->init_xy_controller();
 
     // pilot always controls yaw
+    sub.yaw_rate_only = false;
     set_auto_yaw_mode(AUTO_YAW_HOLD);
 }
 
@@ -153,6 +156,7 @@ void ModeGuided::guided_angle_control_start()
     guided_angle_state.climb_rate_cms = 0.0f;
 
     // pilot always controls yaw
+    sub.yaw_rate_only = false;
     set_auto_yaw_mode(AUTO_YAW_HOLD);
 }
 
@@ -161,26 +165,29 @@ void ModeGuided::guided_angle_control_start()
 // else return false if the waypoint is outside the fence
 bool ModeGuided::guided_set_destination(const Vector3f& destination)
 {
-    // ensure we are in position control mode
-    if (sub.guided_mode != Guided_WP) {
-        guided_pos_control_start();
-    }
-
 #if AP_FENCE_ENABLED
     // reject destination if outside the fence
     const Location dest_loc(destination, Location::AltFrame::ABOVE_ORIGIN);
     if (!sub.fence.check_destination_within_fence(dest_loc)) {
-        AP::logger().Write_Error(LogErrorSubsystem::NAVIGATION, LogErrorCode::DEST_OUTSIDE_FENCE);
+        LOGGER_WRITE_ERROR(LogErrorSubsystem::NAVIGATION, LogErrorCode::DEST_OUTSIDE_FENCE);
         // failure is propagated to GCS with NAK
         return false;
     }
 #endif
 
+    // ensure we are in position control mode
+    if (sub.guided_mode != Guided_WP) {
+        guided_pos_control_start();
+    }
+
     // no need to check return status because terrain data is not used
     sub.wp_nav.set_wp_destination(destination, false);
 
+#if HAL_LOGGING_ENABLED
     // log target
     sub.Log_Write_GuidedTarget(sub.guided_mode, destination, Vector3f());
+#endif
+
     return true;
 }
 
@@ -189,30 +196,33 @@ bool ModeGuided::guided_set_destination(const Vector3f& destination)
 // or if the fence is enabled and guided waypoint is outside the fence
 bool ModeGuided::guided_set_destination(const Location& dest_loc)
 {
-    // ensure we are in position control mode
-    if (sub.guided_mode != Guided_WP) {
-        guided_pos_control_start();
-    }
-
 #if AP_FENCE_ENABLED
     // reject destination outside the fence.
     // Note: there is a danger that a target specified as a terrain altitude might not be checked if the conversion to alt-above-home fails
     if (!sub.fence.check_destination_within_fence(dest_loc)) {
-        AP::logger().Write_Error(LogErrorSubsystem::NAVIGATION, LogErrorCode::DEST_OUTSIDE_FENCE);
+        LOGGER_WRITE_ERROR(LogErrorSubsystem::NAVIGATION, LogErrorCode::DEST_OUTSIDE_FENCE);
         // failure is propagated to GCS with NAK
         return false;
     }
 #endif
 
+    // ensure we are in position control mode
+    if (sub.guided_mode != Guided_WP) {
+        guided_pos_control_start();
+    }
+
     if (!sub.wp_nav.set_wp_destination_loc(dest_loc)) {
         // failure to set destination can only be because of missing terrain data
-        AP::logger().Write_Error(LogErrorSubsystem::NAVIGATION, LogErrorCode::FAILED_TO_SET_DESTINATION);
+        LOGGER_WRITE_ERROR(LogErrorSubsystem::NAVIGATION, LogErrorCode::FAILED_TO_SET_DESTINATION);
         // failure is propagated to GCS with NAK
         return false;
     }
 
+#if HAL_LOGGING_ENABLED
     // log target
     sub.Log_Write_GuidedTarget(sub.guided_mode, Vector3f(dest_loc.lat, dest_loc.lng, dest_loc.alt),Vector3f());
+#endif
+
     return true;
 }
 
@@ -221,20 +231,20 @@ bool ModeGuided::guided_set_destination(const Location& dest_loc)
 // else return false if the waypoint is outside the fence
 bool ModeGuided::guided_set_destination(const Vector3f& destination, bool use_yaw, float yaw_cd, bool use_yaw_rate, float yaw_rate_cds, bool relative_yaw)
 {
-    // ensure we are in position control mode
-    if (sub.guided_mode != Guided_WP) {
-        guided_pos_control_start();
-    }
-
 #if AP_FENCE_ENABLED
     // reject destination if outside the fence
     const Location dest_loc(destination, Location::AltFrame::ABOVE_ORIGIN);
     if (!sub.fence.check_destination_within_fence(dest_loc)) {
-        AP::logger().Write_Error(LogErrorSubsystem::NAVIGATION, LogErrorCode::DEST_OUTSIDE_FENCE);
+        LOGGER_WRITE_ERROR(LogErrorSubsystem::NAVIGATION, LogErrorCode::DEST_OUTSIDE_FENCE);
         // failure is propagated to GCS with NAK
         return false;
     }
 #endif
+
+    // ensure we are in position control mode
+    if (sub.guided_mode != Guided_WP) {
+        guided_pos_control_start();
+    }
 
     // set yaw state
     guided_set_yaw_state(use_yaw, yaw_cd, use_yaw_rate, yaw_rate_cds, relative_yaw);
@@ -244,8 +254,11 @@ bool ModeGuided::guided_set_destination(const Vector3f& destination, bool use_ya
     // no need to check return status because terrain data is not used
     sub.wp_nav.set_wp_destination(destination, false);
 
+#if HAL_LOGGING_ENABLED
     // log target
     sub.Log_Write_GuidedTarget(sub.guided_mode, destination, Vector3f());
+#endif
+
     return true;
 }
 
@@ -284,20 +297,20 @@ void ModeGuided::guided_set_velocity(const Vector3f& velocity, bool use_yaw, flo
 // set guided mode posvel target
 bool ModeGuided::guided_set_destination_posvel(const Vector3f& destination, const Vector3f& velocity)
 {
-    // check we are in velocity control mode
-    if (sub.guided_mode != Guided_PosVel) {
-        guided_posvel_control_start();
-    }
-
 #if AP_FENCE_ENABLED
     // reject destination if outside the fence
     const Location dest_loc(destination, Location::AltFrame::ABOVE_ORIGIN);
     if (!sub.fence.check_destination_within_fence(dest_loc)) {
-        AP::logger().Write_Error(LogErrorSubsystem::NAVIGATION, LogErrorCode::DEST_OUTSIDE_FENCE);
+        LOGGER_WRITE_ERROR(LogErrorSubsystem::NAVIGATION, LogErrorCode::DEST_OUTSIDE_FENCE);
         // failure is propagated to GCS with NAK
         return false;
     }
 #endif
+
+    // check we are in posvel control mode
+    if (sub.guided_mode != Guided_PosVel) {
+        guided_posvel_control_start();
+    }
 
     update_time_ms = AP_HAL::millis();
     posvel_pos_target_cm = destination.topostype();
@@ -308,28 +321,31 @@ bool ModeGuided::guided_set_destination_posvel(const Vector3f& destination, cons
     position_control->input_pos_vel_accel_z(dz, posvel_vel_target_cms.z, 0);
     posvel_pos_target_cm.z = dz;
 
+#if HAL_LOGGING_ENABLED
     // log target
     sub.Log_Write_GuidedTarget(sub.guided_mode, destination, velocity);
+#endif
+
     return true;
 }
 
 // set guided mode posvel target
 bool ModeGuided::guided_set_destination_posvel(const Vector3f& destination, const Vector3f& velocity, bool use_yaw, float yaw_cd, bool use_yaw_rate, float yaw_rate_cds, bool relative_yaw)
 {
-    // check we are in velocity control mode
-    if (sub.guided_mode != Guided_PosVel) {
-        guided_posvel_control_start();
-    }
-
     #if AP_FENCE_ENABLED
     // reject destination if outside the fence
     const Location dest_loc(destination, Location::AltFrame::ABOVE_ORIGIN);
     if (!sub.fence.check_destination_within_fence(dest_loc)) {
-        AP::logger().Write_Error(LogErrorSubsystem::NAVIGATION, LogErrorCode::DEST_OUTSIDE_FENCE);
+        LOGGER_WRITE_ERROR(LogErrorSubsystem::NAVIGATION, LogErrorCode::DEST_OUTSIDE_FENCE);
         // failure is propagated to GCS with NAK
         return false;
     }
     #endif
+
+    // check we are in posvel control mode
+    if (sub.guided_mode != Guided_PosVel) {
+        guided_posvel_control_start();
+    }
 
     // set yaw state
     guided_set_yaw_state(use_yaw, yaw_cd, use_yaw_rate, yaw_rate_cds, relative_yaw);
@@ -344,15 +360,18 @@ bool ModeGuided::guided_set_destination_posvel(const Vector3f& destination, cons
     position_control->input_pos_vel_accel_z(dz, posvel_vel_target_cms.z, 0);
     posvel_pos_target_cm.z = dz;
 
+#if HAL_LOGGING_ENABLED
     // log target
     sub.Log_Write_GuidedTarget(sub.guided_mode, destination, velocity);
+#endif
+
     return true;
 }
 
 // set guided mode angle target
 void ModeGuided::guided_set_angle(const Quaternion &q, float climb_rate_cms)
 {
-    // check we are in velocity control mode
+    // check we are in angle control mode
     if (sub.guided_mode != Guided_Angle) {
         guided_angle_control_start();
     }
@@ -792,7 +811,7 @@ float ModeGuided::get_auto_heading()
         float track_bearing = get_bearing_cd(sub.wp_nav.get_wp_origin().xy(), sub.wp_nav.get_wp_destination().xy());
 
         // Bearing from current position towards intermediate position target (centidegrees)
-        const Vector2f target_vel_xy{position_control->get_vel_target_cms().x, position_control->get_vel_target_cms().y};
+        const Vector2f target_vel_xy = position_control->get_vel_target_cms().xy();
         float angle_error = 0.0f;
         if (target_vel_xy.length() >= position_control->get_max_speed_xy_cms() * 0.1f) {
             const float desired_angle_cd = degrees(target_vel_xy.angle()) * 100.0f;

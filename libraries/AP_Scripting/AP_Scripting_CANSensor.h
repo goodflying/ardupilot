@@ -60,7 +60,10 @@ private:
 class ScriptingCANBuffer {
 public:
 
-    ScriptingCANBuffer(ScriptingCANSensor &_sensor, uint32_t buffer_size):sensor(_sensor), buffer(buffer_size) {};
+    ScriptingCANBuffer(ScriptingCANSensor &_sensor, uint32_t buffer_size):
+        buffer(buffer_size),
+        sensor(_sensor)
+    {};
 
     // Call main sensor write method
     bool write_frame(AP_HAL::CANFrame &out_frame, const uint32_t timeout_us);
@@ -74,6 +77,9 @@ public:
     // recursively add new buffer
     void add_buffer(ScriptingCANBuffer* new_buff);
 
+    // Add a filter to this buffer
+    bool add_filter(uint32_t mask, uint32_t value);
+
 private:
 
     ObjectBuffer<AP_HAL::CANFrame> buffer;
@@ -83,6 +89,12 @@ private:
     ScriptingCANBuffer *next;
 
     HAL_Semaphore sem;
+
+    struct {
+        uint32_t mask;
+        uint32_t value;
+    } filter[8];
+    uint8_t num_filters;
 
 };
 

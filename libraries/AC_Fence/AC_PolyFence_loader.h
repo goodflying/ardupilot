@@ -9,7 +9,16 @@
 // radius looks like an integer as a backwards-compatibility measure.
 // For 4.2 we might consider only loading _INT and always saving as
 // float, and in 4.3 considering _INT invalid
-enum class AC_PolyFenceType {
+
+// CODE_REMOVAL
+// ArduPilot 4.7 no longer stores circle radiuses that look like
+//   integers as integer item types, so any time a fence is saved the
+//   use of the deprecated types is fixed.
+// ArduPilot 4.8 warns if it loads an integer item, warns user to re-upload the fence
+// ArduPilot 4.9 warns if it loads an integer item, warns user to re-upload the fence
+// ArduPilot 4.10 removes support for them
+
+enum class AC_PolyFenceType : uint8_t {
     END_OF_STORAGE        = 99,
     POLYGON_INCLUSION     = 98,
     POLYGON_EXCLUSION     = 97,
@@ -162,7 +171,7 @@ public:
     // load polygon points stored in eeprom into
     // _loaded_offsets_from_origin and perform validation.  returns
     // true if load successfully completed
-    bool load_from_eeprom() WARN_IF_UNUSED;
+    bool load_from_storage() WARN_IF_UNUSED;
 
     // allow threads to lock against AHRS update
     HAL_Semaphore &get_loaded_fence_semaphore(void) {
@@ -186,6 +195,11 @@ public:
     }
 
 
+#if AP_SDCARD_STORAGE_ENABLED
+    bool failed_sdcard_storage(void) const {
+        return _failed_sdcard_storage;
+    }
+#endif
 
 private:
     // multi-thread access support
@@ -423,6 +437,11 @@ private:
     bool index_eeprom() WARN_IF_UNUSED;
 
     uint16_t fence_storage_space_required(const AC_PolyFenceItem *new_items, uint16_t count);
+
+#if AP_SDCARD_STORAGE_ENABLED
+    // true if we failed to load SDCard storage on init
+    bool _failed_sdcard_storage;
+#endif
 };
 
 #endif // AP_FENCE_ENABLED

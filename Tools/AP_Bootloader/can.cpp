@@ -50,7 +50,7 @@ static CANConfig cancfg = {
 // pipelining is not faster when using ChibiOS CAN driver
 #define FW_UPDATE_PIPELINE_LEN 1
 #else
-static ChibiOS::CANIface can_iface[HAL_NUM_CAN_IFACES];
+ChibiOS::CANIface can_iface[HAL_NUM_CAN_IFACES];
 #endif
 
 #ifndef CAN_APP_VERSION_MAJOR
@@ -63,6 +63,10 @@ static ChibiOS::CANIface can_iface[HAL_NUM_CAN_IFACES];
 #define CAN_APP_NODE_NAME "org.ardupilot." CHIBIOS_BOARD_NAME
 #endif
 
+#ifdef EXT_FLASH_SIZE_MB
+static_assert(EXT_FLASH_SIZE_MB == 0, "DroneCAN bootloader cannot support external flash");
+#endif
+
 static uint8_t node_id_allocation_transfer_id;
 static uavcan_protocol_NodeStatus node_status;
 static uint32_t send_next_node_id_allocation_request_at_ms;
@@ -73,6 +77,10 @@ static void processTx(void);
 // keep up to 4 transfers in progress
 #ifndef FW_UPDATE_PIPELINE_LEN
 #define FW_UPDATE_PIPELINE_LEN 4
+#endif
+
+#if CH_CFG_USE_MUTEXES == TRUE
+static HAL_Semaphore can_mutex;
 #endif
 
 static struct {
@@ -131,7 +139,7 @@ static uint32_t get_random_range(uint16_t range)
 static void handle_get_node_info(CanardInstance* ins,
                                  CanardRxTransfer* transfer)
 {
-    uint8_t buffer[UAVCAN_PROTOCOL_GETNODEINFO_RESPONSE_MAX_SIZE] {};
+    uint8_t buffer[UAVCAN_PROTOCOL_GETNODEINFO_RESPONSE_MAX_SIZE];
     uavcan_protocol_GetNodeInfoResponse pkt {};
 
     node_status.uptime_sec = AP_HAL::millis() / 1000U;
@@ -268,7 +276,8 @@ static void handle_file_read_response(CanardInstance* ins, CanardRxTransfer* tra
         }
     }
     if (!found) {
-        // not a current transfer
+        // not a current transfer, we may be getting long delays
+        fw_update.rtt_ms = MIN(3000, fw_update.rtt_ms+250);
         return;
     }
     if (uavcan_protocol_file_ReadResponse_decode(transfer, &fw_update.reads[idx].pkt)) {
@@ -421,7 +430,7 @@ static void handle_allocation_response(CanardInstance* ins, CanardRxTransfer* tr
         // The allocator has confirmed part of unique ID, switching to the next stage and updating the timeout.
         node_id_allocation_unique_id_offset = msg.unique_id.len;
         send_next_node_id_allocation_request_at_ms -= UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_MIN_REQUEST_PERIOD_MS;
-    } else {
+    } else if (msg.node_id != CANARD_BROADCAST_NODE_ID) { // new ID valid? (if not we will time out and start over)
         // Allocation complete - copying the allocated node ID from the message
         canardSetLocalNodeID(ins, msg.node_id);
     }
@@ -626,6 +635,29 @@ static void processRx(void)
 #endif //#if HAL_USE_CAN
 
 /*
+  wrapper around broadcast
+ */
+static void canard_broadcast(uint64_t data_type_signature,
+                             uint16_t data_type_id,
+                             uint8_t &transfer_id,
+                             uint8_t priority,
+                             const void* payload,
+                             uint16_t payload_len)
+{
+#if CH_CFG_USE_MUTEXES == TRUE
+    WITH_SEMAPHORE(can_mutex);
+#endif
+    canardBroadcast(&canard,
+                    data_type_signature,
+                    data_type_id,
+                    &transfer_id,
+                    priority,
+                    payload,
+                    payload_len);
+}
+
+
+/*
   handle waiting for a node ID
  */
 static void can_handle_DNA(void)
@@ -663,13 +695,12 @@ static void can_handle_DNA(void)
     memmove(&allocation_request[1], &my_unique_id[node_id_allocation_unique_id_offset], uid_size);
 
     // Broadcasting the request
-    canardBroadcast(&canard,
-                    UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_SIGNATURE,
-                    UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_ID,
-                    &node_id_allocation_transfer_id,
-                    CANARD_TRANSFER_PRIORITY_LOW,
-                    &allocation_request[0],
-                    (uint16_t) (uid_size + 1));
+    canard_broadcast(UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_SIGNATURE,
+                     UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_ID,
+                     node_id_allocation_transfer_id,
+                     CANARD_TRANSFER_PRIORITY_LOW,
+                     &allocation_request[0],
+                     (uint16_t) (uid_size + 1));
 
     // Preparing for timeout; if response is received, this value will be updated from the callback.
     node_id_allocation_unique_id_offset = 0;
@@ -684,13 +715,12 @@ static void send_node_status(void)
 
     static uint8_t transfer_id;  // Note that the transfer ID variable MUST BE STATIC (or heap-allocated)!
 
-    canardBroadcast(&canard,
-                    UAVCAN_PROTOCOL_NODESTATUS_SIGNATURE,
-                    UAVCAN_PROTOCOL_NODESTATUS_ID,
-                    &transfer_id,
-                    CANARD_TRANSFER_PRIORITY_LOW,
-                    buffer,
-                    len);
+    canard_broadcast(UAVCAN_PROTOCOL_NODESTATUS_SIGNATURE,
+                     UAVCAN_PROTOCOL_NODESTATUS_ID,
+                     transfer_id,
+                     CANARD_TRANSFER_PRIORITY_LOW,
+                     buffer,
+                     len);
 }
 
 
@@ -718,7 +748,7 @@ bool can_check_update(void)
     bool ret = false;
 #if HAL_RAM_RESERVE_START >= 256
     struct app_bootloader_comms *comms = (struct app_bootloader_comms *)HAL_RAM0_START;
-    if (comms->magic == APP_BOOTLOADER_COMMS_MAGIC) {
+    if (comms->magic == APP_BOOTLOADER_COMMS_MAGIC && comms->my_node_id != 0) {
         can_set_node_id(comms->my_node_id);
         fw_update.node_id = comms->server_node_id;
         for (uint8_t i=0; i<FW_UPDATE_PIPELINE_LEN; i++) {
@@ -806,6 +836,35 @@ void can_start()
     if (stm32_was_watchdog_reset()) {
         node_status.vendor_specific_status_code = uint8_t(check_fw_result_t::FAIL_REASON_WATCHDOG);
     }
+
+    {
+        /*
+          support termination solder bridge or switch and optional LED
+         */
+#if defined(HAL_GPIO_PIN_GPIO_CAN1_TERM) && defined(HAL_GPIO_PIN_GPIO_CAN1_TERM_SWITCH)
+        const bool can1_term = palReadLine(HAL_GPIO_PIN_GPIO_CAN1_TERM_SWITCH);
+        palWriteLine(HAL_GPIO_PIN_GPIO_CAN1_TERM, can1_term);
+# ifdef HAL_GPIO_PIN_GPIO_CAN1_TERM_LED
+        palWriteLine(HAL_GPIO_PIN_GPIO_CAN1_TERM_LED, can1_term? HAL_LED_ON : !HAL_LED_ON);
+# endif
+#endif
+
+#if defined(HAL_GPIO_PIN_GPIO_CAN2_TERM) && defined(HAL_GPIO_PIN_GPIO_CAN2_TERM_SWITCH)
+        const bool can2_term = palReadLine(HAL_GPIO_PIN_GPIO_CAN2_TERM_SWITCH);
+        palWriteLine(HAL_GPIO_PIN_GPIO_CAN2_TERM, can2_term);
+# ifdef HAL_GPIO_PIN_GPIO_CAN2_TERM_LED
+        palWriteLine(HAL_GPIO_PIN_GPIO_CAN2_TERM_LED, can2_term? HAL_LED_ON : !HAL_LED_ON);
+# endif
+#endif
+
+#if defined(HAL_GPIO_PIN_GPIO_CAN3_TERM) && defined(HAL_GPIO_PIN_GPIO_CAN3_TERM_SWITCH)
+        const bool can3_term = palReadLine(HAL_GPIO_PIN_GPIO_CAN3_TERM_SWITCH);
+        palWriteLine(HAL_GPIO_PIN_GPIO_CAN3_TERM, can3_term);
+# ifdef HAL_GPIO_PIN_GPIO_CAN3_TERM_LED
+        palWriteLine(HAL_GPIO_PIN_GPIO_CAN3_TERM_LED, can3_term? HAL_LED_ON : !HAL_LED_ON);
+# endif
+#endif
+    }
 }
 
 
@@ -832,5 +891,51 @@ void can_update()
 #endif
     } while (fw_update.node_id != 0);
 }
+
+// printf to CAN LogMessage for debugging
+void can_vprintf(const char *fmt, va_list ap)
+{
+    // only on H7 for now, where we have plenty of flash
+#if defined(STM32H7)
+    uavcan_protocol_debug_LogMessage pkt {};
+    uint8_t buffer[UAVCAN_PROTOCOL_DEBUG_LOGMESSAGE_MAX_SIZE];
+    uint32_t n = vsnprintf((char*)pkt.text.data, sizeof(pkt.text.data), fmt, ap);
+    pkt.text.len = MIN(n, sizeof(pkt.text.data));
+
+    uint32_t len = uavcan_protocol_debug_LogMessage_encode(&pkt, buffer, true);
+    static uint8_t logmsg_transfer_id;
+
+    canard_broadcast(UAVCAN_PROTOCOL_DEBUG_LOGMESSAGE_SIGNATURE,
+                     UAVCAN_PROTOCOL_DEBUG_LOGMESSAGE_ID,
+                     logmsg_transfer_id,
+                     CANARD_TRANSFER_PRIORITY_LOW,
+                     buffer,
+                     len);
+#endif // defined(STM32H7)
+}
+
+// printf to CAN LogMessage for debugging
+void can_printf(const char *fmt, ...)
+{
+    // only on H7 for now, where we have plenty of flash
+#if defined(STM32H7)
+    va_list ap;
+    va_start(ap, fmt);
+    can_vprintf(fmt, ap);
+    va_end(ap);
+#endif // defined(STM32H7)
+}
+
+void can_printf_severity(uint8_t severity, const char *fmt, ...)
+{
+    // only on H7 for now, where we have plenty of flash
+#if defined(STM32H7)
+    va_list ap;
+    va_start(ap, fmt);
+    can_vprintf(fmt, ap);
+    va_end(ap);
+#endif
+}
+
 
 #endif // HAL_USE_CAN

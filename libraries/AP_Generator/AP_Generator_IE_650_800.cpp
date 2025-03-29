@@ -13,6 +13,8 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#pragma GCC optimize("Os")
+
 #include "AP_Generator_IE_650_800.h"
 
 #if AP_GENERATOR_IE_650_800_ENABLED
@@ -58,6 +60,11 @@ void AP_Generator_IE_650_800::decode_latest_term()
     _term[_term_offset] = 0;
     _term_offset = 0;
     _term_number++;
+
+    if (_start_char != '<') {
+        _sentence_valid = false;
+        return;
+    }
 
     switch (_term_number) {
         case 1:

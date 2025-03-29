@@ -9,7 +9,6 @@ based on sim_vehicle.sh by Andrew Tridgell, October 2011
 AP_FLAKE8_CLEAN
 
 """
-from __future__ import print_function
 
 import atexit
 import datetime
@@ -201,7 +200,7 @@ def under_wsl2():
 
 
 def wsl2_host_ip():
-    if not under_wsl2():
+    if not under_wsl2() or cmd_opts.no_wsl2_network:
         return None
 
     pipe = subprocess.Popen("ip route show default | awk '{print $3}'",
@@ -379,10 +378,10 @@ def do_build(opts, frame_options):
         cmd_configure.append("--enable-math-check-indexes")
 
     if opts.enable_ekf2:
-        cmd_configure.append("--enable-ekf2")
+        cmd_configure.append("--enable-EKF2")
 
     if opts.disable_ekf3:
-        cmd_configure.append("--disable-ekf3")
+        cmd_configure.append("--disable-EKF3")
 
     if opts.postype_single:
         cmd_configure.append("--postype-single")
@@ -413,6 +412,9 @@ def do_build(opts, frame_options):
 
     if opts.disable_networking:
         cmd_configure.append("--disable-networking")
+
+    if opts.enable_ppp:
+        cmd_configure.append("--enable-PPP")
 
     if opts.enable_networking_tests:
         cmd_configure.append("--enable-networking-tests")
@@ -635,13 +637,13 @@ def run_in_terminal_window(name, cmd, **kw):
         subprocess.Popen(runme, **kw)
 
 
-tracker_uarta = None  # blemish
+tracker_serial0 = None  # blemish
 
 
 def start_antenna_tracker(opts):
     """Compile and run the AntennaTracker, add tracker to mavproxy"""
 
-    global tracker_uarta
+    global tracker_serial0
     progress("Preparing antenna tracker")
     tracker_home = find_location_by_name(opts.tracker_location)
     vehicledir = os.path.join(autotest_dir, "../../" + "AntennaTracker")
@@ -652,7 +654,7 @@ def start_antenna_tracker(opts):
     tracker_instance = 1
     oldpwd = os.getcwd()
     os.chdir(vehicledir)
-    tracker_uarta = "tcp:127.0.0.1:" + str(5760 + 10 * tracker_instance)
+    tracker_serial0 = "tcp:127.0.0.1:" + str(5760 + 10 * tracker_instance)
     binary_basedir = "build/sitl"
     exe = os.path.join(root_dir,
                        binary_basedir,
@@ -669,9 +671,8 @@ def start_antenna_tracker(opts):
 def start_CAN_Periph(opts, frame_info):
     """Compile and run the sitl_periph"""
 
-    global can_uarta
-    progress("Preparing sitl_periph_gps")
-    options = vinfo.options["sitl_periph_gps"]['frames']['gps']
+    progress("Preparing sitl_periph_universal")
+    options = vinfo.options["sitl_periph_universal"]['frames']['universal']
     defaults_path = frame_info.get('periph_params_filename', None)
     if defaults_path is None:
         defaults_path = options.get('default_params_filename', None)
@@ -684,9 +685,9 @@ def start_CAN_Periph(opts, frame_info):
 
     if not cmd_opts.no_rebuild:
         do_build(opts, options)
-    exe = os.path.join(root_dir, 'build/sitl_periph_gps', 'bin/AP_Periph')
+    exe = os.path.join(root_dir, 'build/sitl_periph_universal', 'bin/AP_Periph')
     cmd = ["nice"]
-    cmd_name = "sitl_periph_gps"
+    cmd_name = "sitl_periph_universal"
     if opts.valgrind:
         cmd_name += " (valgrind)"
         cmd.append("valgrind")
@@ -764,7 +765,6 @@ def start_vehicle(binary, opts, stuff, spawns=None):
         cmd.extend(strace_options)
 
     cmd.append(binary)
-    cmd.append("-S")
     if opts.wipe_eeprom:
         cmd.append("-w")
     cmd.extend(["--model", stuff["model"]])
@@ -773,6 +773,8 @@ def start_vehicle(binary, opts, stuff, spawns=None):
         cmd.extend(["--sysid", str(opts.sysid)])
     if opts.slave is not None:
         cmd.extend(["--slave", str(opts.slave)])
+    if opts.enable_fgview:
+        cmd.extend(["--enable-fgview"])
     if opts.sitl_instance_args:
         # this could be a lot better:
         cmd.extend(opts.sitl_instance_args.split(" "))
@@ -838,9 +840,9 @@ def start_vehicle(binary, opts, stuff, spawns=None):
         if spawns is not None:
             c.extend(["--home", spawns[i]])
         if opts.mcast:
-            c.extend(["--uartA", "mcast:"])
+            c.extend(["--serial0", "mcast:"])
         elif opts.udp:
-            c.extend(["--uartA", "udpclient:127.0.0.1:" + str(5760+i*10)])
+            c.extend(["--serial0", "udpclient:127.0.0.1:" + str(5760+i*10)])
         if opts.auto_sysid:
             if opts.sysid is not None:
                 raise ValueError("Can't use auto-sysid and sysid together")
@@ -868,6 +870,11 @@ def start_mavproxy(opts, stuff):
         cmd.append("mavproxy.exe")
     else:
         cmd.append("mavproxy.py")
+
+    if opts.valgrind:
+        cmd.extend(['--retries', '10'])
+    else:
+        cmd.extend(['--retries', '5'])
 
     if opts.mcast:
         cmd.extend(["--master", "mcast:"])
@@ -901,12 +908,12 @@ def start_mavproxy(opts, stuff):
 
     if opts.tracker:
         cmd.extend(["--load-module", "tracker"])
-        global tracker_uarta
-        # tracker_uarta is set when we start the tracker...
+        global tracker_serial0
+        # tracker_serial0 is set when we start the tracker...
         extra_cmd += ("module load map;"
                       "tracker set port %s; "
                       "tracker start; "
-                      "tracker arm;" % (tracker_uarta,))
+                      "tracker arm;" % (tracker_serial0,))
 
     if opts.mavlink_gimbal:
         cmd.extend(["--load-module", "gimbal"])
@@ -960,6 +967,8 @@ def start_mavproxy(opts, stuff):
         cmd.extend(['--aircraft', opts.aircraft])
     if opts.moddebug:
         cmd.append('--moddebug=%u' % opts.moddebug)
+    if opts.mavcesium:
+        cmd.extend(["--load-module", "cesium"])
 
     if opts.fresh_params:
         # these were built earlier:
@@ -981,6 +990,17 @@ def start_mavproxy(opts, stuff):
 
     run_cmd_blocking("Run MavProxy", cmd, env=env)
     progress("MAVProxy exited")
+
+    if opts.gdb:
+        # in the case that MAVProxy exits (as opposed to being
+        # killed), restart it if we are running under GDB.  This
+        # allows ArduPilot to stop (eg. via a very early panic call)
+        # and have you debugging session not be killed.
+        while True:
+            progress("Running under GDB; restarting MAVProxy")
+            run_cmd_blocking("Run MavProxy", cmd, env=env)
+            progress("MAVProxy exited; sleeping 10")
+            time.sleep(10)
 
 
 vehicle_options_string = '|'.join(vinfo.options.keys())
@@ -1280,6 +1300,11 @@ group_sim.add_option("", "--no-extra-ports",
                      dest='no_extra_ports',
                      default=False,
                      help="Disable setup of UDP 14550 and 14551 output")
+group_sim.add_option("", "--no-wsl2-network",
+                     action='store_true',
+                     dest='no_wsl2_network',
+                     default=False,
+                     help="Disable setup of WSL2 network for output")
 group_sim.add_option("-Z", "--swarm",
                      type='string',
                      default=None,
@@ -1334,8 +1359,12 @@ group_sim.add_option("--enable-dds", action='store_true',
                      help="Enable the dds client to connect with ROS2/DDS")
 group_sim.add_option("--disable-networking", action='store_true',
                      help="Disable networking APIs")
+group_sim.add_option("--enable-ppp", action='store_true',
+                     help="Enable PPP networking")
 group_sim.add_option("--enable-networking-tests", action='store_true',
                      help="Enable networking tests")
+group_sim.add_option("--enable-fgview", action='store_true',
+                     help="Enable FlightGear output")
 
 parser.add_option_group(group_sim)
 
@@ -1354,6 +1383,11 @@ group.add_option("", "--map",
                  default=False,
                  action='store_true',
                  help="load map module on startup")
+group.add_option("", "--mavcesium",
+                 default=False,
+                 action='store_true',
+                 help="load MAVCesium module on startup")
+
 group.add_option("", "--console",
                  default=False,
                  action='store_true',
